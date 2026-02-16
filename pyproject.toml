@@ -42,11 +42,11 @@ dev = [
 qrcode = ["qrcode>=7.4.2"]
 
 [project.urls]
-Homepage = "https://github.com/attilasukosd/pyaileys"
-Repository = "https://github.com/attilasukosd/pyaileys"
-Issues = "https://github.com/attilasukosd/pyaileys/issues"
-Changelog = "https://github.com/attilasukosd/pyaileys/blob/main/CHANGELOG.md"
-Security = "https://github.com/attilasukosd/pyaileys/security"
+Homepage = "https://github.com/atiti/pyaileys"
+Repository = "https://github.com/atiti/pyaileys"
+Issues = "https://github.com/atiti/pyaileys/issues"
+Changelog = "https://github.com/atiti/pyaileys/blob/main/CHANGELOG.md"
+Security = "https://github.com/atiti/pyaileys/security"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

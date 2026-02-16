@@ -1,6 +1,6 @@
 # pyaileys
 
-[![CI](https://github.com/attilasukosd/pyaileys/actions/workflows/ci.yml/badge.svg)](https://github.com/attilasukosd/pyaileys/actions/workflows/ci.yml)
+[![CI](https://github.com/atiti/pyaileys/actions/workflows/ci.yml/badge.svg)](https://github.com/atiti/pyaileys/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/pyaileys.svg)](https://pypi.org/project/pyaileys/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/pyaileys.svg)](https://pypi.org/project/pyaileys/)
 [![License](https://img.shields.io/pypi/l/pyaileys.svg)](LICENSE)
