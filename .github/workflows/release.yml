@@ -39,6 +39,7 @@ jobs:
           import os
           import re
           import tomllib
+          from pathlib import Path
 
           tag = os.environ["GITHUB_REF_NAME"]
           m = re.fullmatch(r"v(.+)", tag)
@@ -46,17 +47,15 @@ jobs:
               raise SystemExit(f"unexpected tag format: {tag!r} (expected vX.Y.Z)")
           version = m.group(1)
 
-          pyproject = tomllib.loads(open("pyproject.toml", "rb").read())
+          with open("pyproject.toml", "rb") as f:
+              pyproject = tomllib.load(f)
           project_version = pyproject["project"]["version"]
           if project_version != version:
               raise SystemExit(f"pyproject.toml version {project_version!r} does not match tag {version!r}")
 
-          import importlib.util
-          spec = importlib.util.spec_from_file_location("pyaileys", "src/pyaileys/__init__.py")
-          mod = importlib.util.module_from_spec(spec)
-          assert spec and spec.loader
-          spec.loader.exec_module(mod)
-          init_version = getattr(mod, "__version__", None)
+          t = Path("src/pyaileys/__init__.py").read_text("utf-8")
+          m2 = re.search(r"^__version__\s*=\s*['\"]([^'\"]+)['\"]", t, re.M)
+          init_version = m2.group(1) if m2 else None
           if init_version != version:
               raise SystemExit(f"src/pyaileys/__init__.py __version__ {init_version!r} does not match tag {version!r}")
 
