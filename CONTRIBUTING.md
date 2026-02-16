@@ -40,7 +40,8 @@ Two parts of the repo are generated and intentionally excluded from linting/type
 To regenerate:
 
 ```bash
-python3 tools/gen_wabinary_constants.py
+git clone https://github.com/WhiskeySockets/Baileys.git /path/to/Baileys
+python3 tools/gen_wabinary_constants.py --baileys /path/to/Baileys
 python3 tools/patch_waproto_for_protoc.py
 protoc -Iproto --python_out=src/pyaileys/proto proto/WAProto.proto
 ```
@@ -60,4 +61,3 @@ Please include:
 - `pyaileys` version
 - minimal repro steps
 - logs with sensitive material redacted (JIDs are usually fine, auth keys are not)
-

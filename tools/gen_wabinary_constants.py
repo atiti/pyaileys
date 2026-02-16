@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import re
+from os import environ
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BAILEYS = Path.home() / "build" / "Baileys"
-SRC = BAILEYS / "src" / "WABinary" / "constants.ts"
 OUT = ROOT / "src" / "pyaileys" / "wabinary" / "constants.py"
 
 
@@ -30,8 +30,46 @@ def _to_json_array(ts_array: str):
     return json.loads(s)
 
 
+def _resolve_baileys_dir(path: str | None) -> Path:
+    # Explicit path takes precedence.
+    candidates: list[Path] = []
+    if path:
+        candidates.append(Path(path).expanduser().resolve())
+
+    # Common local layouts for contributors.
+    candidates.extend(
+        [
+            (ROOT / "Baileys"),
+            (ROOT.parent / "Baileys"),
+        ]
+    )
+
+    for base in candidates:
+        if (base / "src" / "WABinary" / "constants.ts").exists():
+            return base
+
+    raise SystemExit(
+        "Baileys checkout not found.\n\n"
+        "Clone https://github.com/WhiskeySockets/Baileys and pass the path via:\n"
+        "  python3 tools/gen_wabinary_constants.py --baileys /path/to/Baileys\n"
+        "or set:\n"
+        "  BAILEYS_DIR=/path/to/Baileys\n"
+    )
+
+
 def main() -> None:
-    text = SRC.read_text("utf-8")
+    ap = argparse.ArgumentParser(prog="gen_wabinary_constants.py")
+    ap.add_argument(
+        "--baileys",
+        default=environ.get("BAILEYS_DIR"),
+        help="path to a Baileys checkout (https://github.com/WhiskeySockets/Baileys)",
+    )
+    args = ap.parse_args()
+
+    baileys_dir = _resolve_baileys_dir(args.baileys)
+    src = baileys_dir / "src" / "WABinary" / "constants.ts"
+
+    text = src.read_text("utf-8")
 
     tags_block = _extract_between(
         text, "export const TAGS = {", "}\n\nexport const DOUBLE_BYTE_TOKENS"
@@ -71,7 +109,7 @@ def main() -> None:
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(
-        "# This file is auto-generated from Baileys (src/WABinary/constants.ts).\n"
+        "# This file is auto-generated from WhiskeySockets/Baileys (src/WABinary/constants.ts).\n"
         "# Do not edit by hand. Regenerate via: python3 tools/gen_wabinary_constants.py\n"
         "from __future__ import annotations\n\n"
         f"TAGS = {tags!r}\n\n"

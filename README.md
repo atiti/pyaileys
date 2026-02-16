@@ -129,10 +129,11 @@ tag like `v0.1.0`.
 
 ## Regenerating Generated Files
 
-`wabinary` token tables are generated from the local Baileys checkout:
+`wabinary` token tables are generated from a Baileys checkout:
 
 ```bash
-python3 tools/gen_wabinary_constants.py
+git clone https://github.com/WhiskeySockets/Baileys.git /path/to/Baileys
+python3 tools/gen_wabinary_constants.py --baileys /path/to/Baileys
 ```
 
 `proto/WAProto.proto` is vendored from Baileys and patched to satisfy `protoc`:
@@ -144,7 +145,7 @@ protoc -Iproto --python_out=src/pyaileys/proto proto/WAProto.proto
 
 ## Credits
 
-- Inspired by the Baileys TypeScript library (MIT): `~/build/Baileys/`
+- Inspired by the Baileys TypeScript library (MIT): https://github.com/WhiskeySockets/Baileys
 
 ## Contributing
 
