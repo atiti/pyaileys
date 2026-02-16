@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.1.1] - 2026-02-16
+
+### Added
+
+- Chatstate support (typing/recording indications)
+
+### Fixed
+
+- Release workflow version check (tag vs `pyproject.toml` + `__init__.__version__`)
+
 ## [0.1.0] - 2026-02-16
 
 ### Added
