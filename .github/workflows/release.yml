@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m pip install -e ".[dev]"
+
+      - name: Lint + typecheck + tests
+        run: |
+          ruff check .
+          ruff format --check .
+          mypy src/pyaileys
+          pytest -q
+
+      - name: Validate tag matches version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          m = re.fullmatch(r"v(.+)", tag)
+          if not m:
+              raise SystemExit(f"unexpected tag format: {tag!r} (expected vX.Y.Z)")
+          version = m.group(1)
+
+          pyproject = tomllib.loads(open("pyproject.toml", "rb").read())
+          project_version = pyproject["project"]["version"]
+          if project_version != version:
+              raise SystemExit(f"pyproject.toml version {project_version!r} does not match tag {version!r}")
+
+          import importlib.util
+          spec = importlib.util.spec_from_file_location("pyaileys", "src/pyaileys/__init__.py")
+          mod = importlib.util.module_from_spec(spec)
+          assert spec and spec.loader
+          spec.loader.exec_module(mod)
+          init_version = getattr(mod, "__version__", None)
+          if init_version != version:
+              raise SystemExit(f"src/pyaileys/__init__.py __version__ {init_version!r} does not match tag {version!r}")
+
+          print(f"Version OK: {version}")
+          PY
+
+      - name: Build sdist and wheel
+        run: |
+          python -m build
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pyaileys/
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1

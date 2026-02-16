@@ -1,0 +1,15 @@
+{
+  "tag": "iq",
+  "attrs": {
+    "to": "s.whatsapp.net",
+    "type": "get",
+    "xmlns": "w:p"
+  },
+  "content": [
+    {
+      "tag": "ping",
+      "attrs": {}
+    }
+  ]
+}
+
