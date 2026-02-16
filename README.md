@@ -24,6 +24,7 @@ What works today:
 - MD session login + QR pairing
 - Basic 1:1 Signal E2E (`pkmsg`/`msg`) decrypt/encrypt
 - Basic text send (with multi-device fanout)
+- Typing/recording indications (`chatstate`)
 - Media send (image, PTT voice note, documents, static location, contacts)
 - Media download/decrypt (image, audio/PTT, documents)
 - History Sync ingestion into an in-memory store

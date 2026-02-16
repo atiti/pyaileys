@@ -94,7 +94,7 @@ async def main() -> None:
     await client.connect()
 
     print(
-        "\nCommands: help, sync, sync_chat <jid> [n], chats, history <jid> [n], send <jid> <text>, send_image <jid> <path> [caption], send_ptt <jid> <path> [seconds], send_doc <jid> <path> [caption], send_vcard <jid> <path> [display_name], send_contacts <jid> <vcf1> <vcf2>..., send_location <jid> <lat> <lng> [name], download <chat_jid> <msg_id> <out>, me, quit\n"
+        "\nCommands: help, sync, sync_chat <jid> [n], chats, history <jid> [n], send <jid> <text>, typing <jid> on|off, recording <jid> on|off, send_image <jid> <path> [caption], send_ptt <jid> <path> [seconds], send_doc <jid> <path> [caption], send_vcard <jid> <path> [display_name], send_contacts <jid> <vcf1> <vcf2>..., send_location <jid> <lat> <lng> [name], download <chat_jid> <msg_id> <out>, me, quit\n"
     )
 
     while True:
@@ -120,6 +120,8 @@ async def main() -> None:
             print("chats")
             print("history <jid> [n]")
             print("send <jid> <text>")
+            print("typing <jid> on|off")
+            print("recording <jid> on|off")
             print("send_image <jid> <path> [caption]")
             print("send_ptt <jid> <path> [seconds]")
             print("send_doc <jid> <path> [caption]")
@@ -202,6 +204,34 @@ async def main() -> None:
                 print("sent:", mid)
             except SendRejectedError as e:
                 print(f"rejected: error={e.code} ack={e.ack_attrs}")
+            except Exception as e:
+                print("error:", e)
+            continue
+
+        if cmd == "typing":
+            parts = argstr.split(" ", 1) if argstr else []
+            if len(parts) < 2:
+                print("usage: typing <jid> on|off")
+                continue
+            jid = parts[0]
+            on = parts[1].lower() in ("on", "1", "true", "yes")
+            try:
+                await client.set_typing(jid, on)
+                print("ok")
+            except Exception as e:
+                print("error:", e)
+            continue
+
+        if cmd == "recording":
+            parts = argstr.split(" ", 1) if argstr else []
+            if len(parts) < 2:
+                print("usage: recording <jid> on|off")
+                continue
+            jid = parts[0]
+            on = parts[1].lower() in ("on", "1", "true", "yes")
+            try:
+                await client.set_recording(jid, on)
+                print("ok")
             except Exception as e:
                 print("error:", e)
             continue

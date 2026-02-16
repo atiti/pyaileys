@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from .auth.state import AuthenticationState
 from .auth.store import MultiFileAuthState
@@ -53,6 +53,9 @@ class ClientConfig:
 class MediaUpload:
     media_url: str
     direct_path: str
+
+
+ChatState = Literal["composing", "paused", "recording"]
 
 
 class WhatsAppClient:
@@ -1045,6 +1048,54 @@ class WhatsAppClient:
         await self.socket.send_node(
             BinaryNode(tag="presence", attrs={"type": "available" if available else "unavailable"})
         )
+
+    async def send_chatstate(self, jid: str, state: ChatState) -> None:
+        """
+        Send a typing/recording indicator (chat state) to a 1:1 chat.
+
+        Mirrors Baileys' `sendPresenceUpdate('composing'|'paused'|'recording', jid)`.
+        """
+
+        me = self.socket.auth.creds.me
+        if not me:
+            raise RuntimeError("not authenticated")
+
+        to_jid = jid_normalized_user(jid) or jid
+        dec = jid_decode(to_jid)
+        if not dec or not dec.server:
+            raise ValueError(f"invalid jid: {jid!r}")
+
+        server = "s.whatsapp.net" if dec.server == "c.us" else dec.server
+        is_lid = server == "lid"
+
+        from_jid = me.lid if is_lid and me.lid else me.id
+        if not from_jid:
+            raise RuntimeError("missing sender jid in creds")
+
+        child_tag = "composing" if state == "recording" else state
+        child_attrs = {"media": "audio"} if state == "recording" else {}
+
+        await self.socket.send_node(
+            BinaryNode(
+                tag="chatstate",
+                attrs={"from": from_jid, "to": to_jid},
+                content=[BinaryNode(tag=child_tag, attrs=child_attrs, content=None)],
+            )
+        )
+
+    async def set_typing(self, jid: str, typing: bool = True) -> None:
+        """
+        Convenience wrapper for typing indications.
+        """
+
+        await self.send_chatstate(jid, "composing" if typing else "paused")
+
+    async def set_recording(self, jid: str, recording: bool = True) -> None:
+        """
+        Convenience wrapper for voice-note recording indications.
+        """
+
+        await self.send_chatstate(jid, "recording" if recording else "paused")
 
     async def _send_peer_message(self, msg: Any) -> None:
         """

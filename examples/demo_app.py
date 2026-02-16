@@ -183,7 +183,7 @@ async def main() -> None:
     await client.connect()
 
     print(
-        "\nCommands: help, me, ping, presence on|off, send_node_json <file>, query_node_json <file>, send_text <jid> <text>, send_image <jid> <path> [caption], send_ptt <jid> <path> [seconds], send_doc <jid> <path> [caption], send_vcard <jid> <path> [display_name], send_contacts <jid> <vcf1> <vcf2>..., send_location <jid> <lat> <lng> [name], quit\n"
+        "\nCommands: help, me, ping, presence on|off, chatstate <jid> composing|paused|recording, send_node_json <file>, query_node_json <file>, send_text <jid> <text>, send_image <jid> <path> [caption], send_ptt <jid> <path> [seconds], send_doc <jid> <path> [caption], send_vcard <jid> <path> [display_name], send_contacts <jid> <vcf1> <vcf2>..., send_location <jid> <lat> <lng> [name], quit\n"
     )
 
     while True:
@@ -207,6 +207,7 @@ async def main() -> None:
                 print("me")
                 print("ping")
                 print("presence on|off")
+                print("chatstate <jid> composing|paused|recording")
                 print("send_node_json <file>")
                 print("query_node_json <file>")
                 print("send_text <jid> <text>")
@@ -244,6 +245,20 @@ async def main() -> None:
                     continue
                 on = parts[1].lower() in ("on", "1", "true", "available")
                 await client.set_presence(on)
+                print("ok")
+                continue
+
+            if cmd == "chatstate":
+                p = line.split(" ", 2)
+                if len(p) < 3:
+                    print("usage: chatstate <jid> composing|paused|recording")
+                    continue
+                jid = p[1]
+                state = p[2].strip().lower()
+                if state not in ("composing", "paused", "recording"):
+                    print("error: invalid state")
+                    continue
+                await client.send_chatstate(jid, state)  # type: ignore[arg-type]
                 print("ok")
                 continue
 
