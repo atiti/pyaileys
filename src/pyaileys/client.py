@@ -1664,11 +1664,18 @@ class WhatsAppClient:
                     },
                 )
 
-                # History sync notification lives inside protocolMessage.
-                if inner.HasField("protocolMessage") and inner.protocolMessage.HasField(
+                # History sync notifications are protocol messages. Some payloads appear at the
+                # top-level `Message` even when `deviceSentMessage` is present, so check both.
+                notif = None
+                if msg.HasField("protocolMessage") and msg.protocolMessage.HasField(
+                    "historySyncNotification"
+                ):
+                    notif = msg.protocolMessage.historySyncNotification
+                elif inner.HasField("protocolMessage") and inner.protocolMessage.HasField(
                     "historySyncNotification"
                 ):
                     notif = inner.protocolMessage.historySyncNotification
+                if notif is not None:
                     ensure_task(self._handle_history_sync(notif), name="pyaileys.history_sync")
 
             ensure_task(
