@@ -6,6 +6,7 @@ Demonstrates:
 - Signal (E2E) message decrypt/encrypt
 - history sync ingestion into an in-memory store
 - listing chats and reading local history
+- best-effort contact/profile metadata (names from history sync + notify/push names)
 """
 
 from __future__ import annotations
@@ -75,7 +76,13 @@ async def main() -> None:
         sender = ev.get("sender_jid")
         text = ev.get("text")
         if text:
-            print(f"\n[rx] {chat} {sender}: {text}")
+            chat_name = client.get_display_name(str(chat)) if chat else None
+            sender_name = client.get_display_name(str(sender)) if sender else None
+            chat_s = f"{chat_name} ({chat})" if chat_name and chat_name != chat else str(chat)
+            sender_s = (
+                f"{sender_name} ({sender})" if sender_name and sender_name != sender else str(sender)
+            )
+            print(f"\n[rx] {chat_s} {sender_s}: {text}")
 
     async def on_history(ev) -> None:
         print(
@@ -94,7 +101,7 @@ async def main() -> None:
     await client.connect()
 
     print(
-        "\nCommands: help, sync, sync_chat <jid> [n], chats, history <jid> [n], send <jid> <text>, typing <jid> on|off, recording <jid> on|off, send_image <jid> <path> [caption], send_ptt <jid> <path> [seconds], send_doc <jid> <path> [caption], send_vcard <jid> <path> [display_name], send_contacts <jid> <vcf1> <vcf2>..., send_location <jid> <lat> <lng> [name], download <chat_jid> <msg_id> <out>, me, quit\n"
+        "\nCommands: help, sync, sync_chat <jid> [n], chats, history <jid> [n], send <jid> <text>, typing <jid> on|off, recording <jid> on|off, name <jid>, ppic <jid> [preview|image], status <jid> [jid...], send_image <jid> <path> [caption], send_ptt <jid> <path> [seconds], send_doc <jid> <path> [caption], send_vcard <jid> <path> [display_name], send_contacts <jid> <vcf1> <vcf2>..., send_location <jid> <lat> <lng> [name], download <chat_jid> <msg_id> <out>, me, quit\n"
     )
 
     while True:
@@ -122,6 +129,9 @@ async def main() -> None:
             print("send <jid> <text>")
             print("typing <jid> on|off")
             print("recording <jid> on|off")
+            print("name <jid>  (best-effort name lookup)")
+            print("ppic <jid> [preview|image]  (fetch profile picture URL)")
+            print("status <jid> [jid...]  (fetch profile 'about'/status via USync)")
             print("send_image <jid> <path> [caption]")
             print("send_ptt <jid> <path> [seconds]")
             print("send_doc <jid> <path> [caption]")
@@ -145,7 +155,8 @@ async def main() -> None:
             for c in chats:
                 last = client.store.last_message(c.jid)
                 last_s = f" last={_short(last.text, 60)!r}" if last else ""
-                name_s = f" {c.name!r}" if c.name else ""
+                dn = client.get_display_name(c.jid)
+                name_s = f" {dn!r}" if dn else ""
                 extra = ""
                 if c.pn_jid or c.lid_jid:
                     extra = f" pn={c.pn_jid or '-'} lid={c.lid_jid or '-'}"
@@ -232,6 +243,48 @@ async def main() -> None:
             try:
                 await client.set_recording(jid, on)
                 print("ok")
+            except Exception as e:
+                print("error:", e)
+            continue
+
+        if cmd == "name":
+            jid = argstr.strip()
+            if not jid:
+                print("usage: name <jid>")
+                continue
+            dn = client.get_display_name(jid)
+            c = client.get_contact(jid)
+            print("display_name:", dn)
+            print("contact:", c)
+            continue
+
+        if cmd == "ppic":
+            parts = argstr.split(" ", 1) if argstr else []
+            if len(parts) < 1 or not parts[0]:
+                print("usage: ppic <jid> [preview|image]")
+                continue
+            jid = parts[0]
+            typ = "preview"
+            if len(parts) >= 2 and parts[1].strip():
+                t = parts[1].strip().lower()
+                if t in ("preview", "image"):
+                    typ = t
+            try:
+                url = await client.profile_picture_url(jid, picture_type=typ)  # type: ignore[arg-type]
+                print("url:", url)
+            except Exception as e:
+                print("error:", e)
+            continue
+
+        if cmd == "status":
+            parts = argstr.split() if argstr else []
+            if not parts:
+                print("usage: status <jid> [jid...]")
+                continue
+            try:
+                out = await client.fetch_status(*parts)
+                for j, st in out.items():
+                    print(f"- {j}: {st!r}")
             except Exception as e:
                 print("error:", e)
             continue

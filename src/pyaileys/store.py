@@ -13,6 +13,27 @@ class ChatInfo:
 
 
 @dataclass(slots=True)
+class ContactInfo:
+    """
+    Best-effort contact/profile metadata.
+
+    Notes:
+    - `name` usually comes from history sync (often your saved contact name).
+    - `notify` is the "push name" the contact has set for themselves and is
+      commonly exposed as the stanza attribute `notify`.
+    """
+
+    jid: str
+    name: str | None = None
+    notify: str | None = None
+    verified_name: str | None = None
+    pn_jid: str | None = None
+    lid_jid: str | None = None
+    img_url: str | None = None
+    status: str | None = None
+
+
+@dataclass(slots=True)
 class MessageInfo:
     id: str
     chat_jid: str
@@ -32,6 +53,7 @@ class InMemoryStore:
     def __init__(self) -> None:
         self._chats: dict[str, ChatInfo] = {}
         self._messages: dict[str, list[MessageInfo]] = {}
+        self._contacts: dict[str, ContactInfo] = {}
 
     def upsert_chat(self, chat: ChatInfo) -> None:
         existing = self._chats.get(chat.jid)
@@ -48,6 +70,31 @@ class InMemoryStore:
 
     def list_chats(self) -> list[ChatInfo]:
         return list(self._chats.values())
+
+    def get_chat(self, jid: str) -> ChatInfo | None:
+        return self._chats.get(jid)
+
+    def upsert_contact(self, contact: ContactInfo) -> None:
+        existing = self._contacts.get(contact.jid)
+        if existing is None:
+            self._contacts[contact.jid] = contact
+            return
+        # Merge, preferring new non-null values.
+        existing.name = contact.name or existing.name
+        existing.notify = contact.notify or existing.notify
+        existing.verified_name = contact.verified_name or existing.verified_name
+        existing.pn_jid = contact.pn_jid or existing.pn_jid
+        existing.lid_jid = contact.lid_jid or existing.lid_jid
+        existing.img_url = contact.img_url or existing.img_url
+        if contact.status is not None:
+            # Preserve empty-string semantics (blocked/hidden) for status.
+            existing.status = contact.status
+
+    def get_contact(self, jid: str) -> ContactInfo | None:
+        return self._contacts.get(jid)
+
+    def list_contacts(self) -> list[ContactInfo]:
+        return list(self._contacts.values())
 
     def get_messages(self, chat_jid: str, *, limit: int = 50) -> list[MessageInfo]:
         msgs = self._messages.get(chat_jid) or []

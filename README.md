@@ -28,12 +28,13 @@ What works today:
 - Media send (image, PTT voice note, documents, static location, contacts)
 - Media download/decrypt (image, audio/PTT, documents)
 - History Sync ingestion into an in-memory store
+- Best-effort contact/profile metadata (names from history sync + `notify` push names, profile picture URL, status/about)
 
 ## Limitations (Important)
 
 - Group E2E (`skmsg`) / Sender Keys: not implemented
 - Media support is partial: no video/stickers yet, and no automatic thumbnails/duration/waveform
-- App-state sync + rich chat/contact model: minimal (demo store)
+- App-state sync + rich chat/contact model: minimal (demo store; contact names/profile are best-effort)
 - API stability: no guarantees yet (pre-1.0)
 
 ## Legal / Safety
@@ -86,6 +87,29 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+## Contacts & Profiles (Best-Effort)
+
+WhatsApp Web does not provide a simple "address book" API. In practice, name/profile info comes from multiple places:
+
+- History sync conversations (`displayName`/`name`/`username`)
+- Incoming message stanzas (`notify` push name)
+- Explicit queries (e.g. profile picture URL, about/status)
+
+This library exposes a small convenience layer:
+
+```python
+dn = client.get_display_name("12345@s.whatsapp.net")
+contact = client.get_contact("12345@s.whatsapp.net")
+
+pic = await client.profile_picture_url("12345@s.whatsapp.net", picture_type="preview")
+statuses = await client.fetch_status("12345@s.whatsapp.net")
+```
+
+Notes:
+
+- `get_display_name()` prefers a "saved name" (history sync) and falls back to push name (`notify`).
+- `fetch_status()` may return `""` if the status is hidden/blocked, and `None` if unavailable.
 
 ## Examples
 

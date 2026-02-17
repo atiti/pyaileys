@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.1.2] - 2026-02-17
+
+### Added
+
+- Best-effort contact/profile metadata (names from History Sync + `notify`, profile picture URL fetch, "about"/status fetch)
+- Simple CLI enhancements (resolved names on receive; commands: `name`, `ppic`, `status`)
+
 ## [0.1.1] - 2026-02-16
 
 ### Added

@@ -33,7 +33,7 @@ from .messages import (
 from .signal import SignalRepository
 from .socket import WASocket
 from .socket_config import SocketConfig
-from .store import ChatInfo, InMemoryStore, MessageInfo
+from .store import ChatInfo, ContactInfo, InMemoryStore, MessageInfo
 from .util.asyncio import ensure_task
 from .util.events import Listener
 from .wabinary import S_WHATSAPP_NET
@@ -133,6 +133,266 @@ class WhatsAppClient:
         if not alt_dec or not alt_dec.user or not alt_dec.server:
             return None
         return jid_encode(alt_dec.user, alt_dec.server, dec.device)
+
+    def _is_user_like_jid(self, jid: str | None) -> bool:
+        """
+        True for 1:1 user JIDs (PN/LID), false for group/newsletter/etc.
+        """
+
+        norm = jid_normalized_user(jid)
+        if not norm:
+            return False
+        dec = jid_decode(norm)
+        if not dec or not dec.server:
+            return False
+        return dec.server in ("s.whatsapp.net", "lid", "hosted", "hosted.lid")
+
+    def _upsert_contact_info(
+        self,
+        jid: str,
+        *,
+        name: str | None = None,
+        notify: str | None = None,
+        pn_jid: str | None = None,
+        lid_jid: str | None = None,
+        img_url: str | None = None,
+        status: str | None = None,
+    ) -> None:
+        if not jid:
+            return
+        base = jid_normalized_user(jid) or jid
+        self.store.upsert_contact(
+            ContactInfo(
+                jid=base,
+                name=name or None,
+                notify=notify or None,
+                pn_jid=pn_jid or None,
+                lid_jid=lid_jid or None,
+                img_url=img_url or None,
+                status=status if status is not None else None,
+            )
+        )
+        alt = self._jid_alt.get(base)
+        if alt:
+            self.store.upsert_contact(
+                ContactInfo(
+                    jid=alt,
+                    name=name or None,
+                    notify=notify or None,
+                    pn_jid=pn_jid or None,
+                    lid_jid=lid_jid or None,
+                    img_url=img_url or None,
+                    status=status if status is not None else None,
+                )
+            )
+
+    def get_contact(self, jid: str) -> ContactInfo | None:
+        """
+        Return best-effort contact metadata for a user JID, if known locally.
+
+        This is populated from:
+        - history sync conversation entries (displayName/name/username)
+        - incoming message stanzas (`notify` push names)
+        - explicit profile fetches (e.g. profile picture URL)
+        """
+
+        base = jid_normalized_user(jid) or jid
+        c = self.store.get_contact(base)
+        if c:
+            return c
+        alt = self._jid_alt.get(base)
+        if alt:
+            return self.store.get_contact(alt)
+        return None
+
+    def get_display_name(self, jid: str) -> str | None:
+        """
+        Best-effort display name resolution for a JID.
+
+        For 1:1 JIDs, prefers history-sync names (often your saved contact name),
+        then the contact's push name (stanza `notify`).
+        For groups, returns the chat name if available.
+        """
+
+        base = jid_normalized_user(jid) or jid
+
+        if not self._is_user_like_jid(base):
+            chat = self.store.get_chat(base)
+            return chat.name if chat and chat.name else None
+
+        contact = self.get_contact(base)
+        if contact:
+            return contact.name or contact.notify or contact.verified_name
+
+        chat = self.store.get_chat(base)
+        return chat.name if chat and chat.name else None
+
+    async def profile_picture_url(
+        self,
+        jid: str,
+        *,
+        picture_type: Literal["preview", "image"] = "preview",
+        timeout_s: float = 20.0,
+        update_store: bool = True,
+    ) -> str | None:
+        """
+        Fetch the profile picture URL for a user/group (if set).
+
+        Mirrors Baileys' `profilePictureUrl(jid, type)`.
+        """
+
+        target = jid_normalized_user(jid) or jid
+        if not target:
+            raise ValueError("jid is required")
+
+        base_content: list[BinaryNode] = [
+            BinaryNode(tag="picture", attrs={"type": picture_type, "query": "url"})
+        ]
+
+        async def _lookup_tc_token(j: str) -> bytes | None:
+            try:
+                res = await self.socket.auth.keys.get("tctoken", [j])
+            except Exception:
+                return None
+            raw = res.get(j)
+            if isinstance(raw, (bytes, bytearray, memoryview)):
+                return bytes(raw)
+            if isinstance(raw, dict):
+                tok = raw.get("token")
+                if isinstance(tok, (bytes, bytearray, memoryview)):
+                    return bytes(tok)
+            return None
+
+        tc_token = await _lookup_tc_token(target)
+        if tc_token is None:
+            alt = self._jid_alt.get(target)
+            if alt:
+                tc_token = await _lookup_tc_token(alt)
+        if tc_token is not None:
+            base_content.append(BinaryNode(tag="tctoken", attrs={}, content=tc_token))
+
+        res = await self.socket.query(
+            BinaryNode(
+                tag="iq",
+                attrs={"target": target, "to": S_WHATSAPP_NET, "type": "get", "xmlns": "w:profile:picture"},
+                content=base_content,
+            ),
+            timeout_s=timeout_s,
+        )
+
+        pic_node: BinaryNode | None = None
+        if isinstance(res.content, list):
+            for c in res.content:
+                if isinstance(c, BinaryNode) and c.tag == "picture":
+                    pic_node = c
+                    break
+        url = pic_node.attrs.get("url") if pic_node else None
+
+        if update_store and url and self._is_user_like_jid(target):
+            self._upsert_contact_info(target, img_url=url)
+
+        return url
+
+    async def fetch_status(
+        self,
+        *jids: str,
+        timeout_s: float = 20.0,
+        update_store: bool = True,
+    ) -> dict[str, str | None]:
+        """
+        Fetch profile "about" (status) strings for one or more user JIDs.
+
+        This uses a USync query with the `status` protocol (Baileys' `fetchStatus`).
+        Returns a mapping `{jid: status}` where status can be:
+        - `None` when unavailable
+        - `""` when blocked/hidden (server returns code=401)
+        - a non-empty string for the actual "about"
+        """
+
+        uniq = [jid_normalized_user(j) or j for j in jids if j]
+        uniq = list(dict.fromkeys([j for j in uniq if j and self._is_user_like_jid(j)]))
+        if not uniq:
+            return {}
+
+        sid = f"status-{int(time.time() * 1000)}"
+        iq = BinaryNode(
+            tag="iq",
+            attrs={"to": S_WHATSAPP_NET, "type": "get", "xmlns": "usync"},
+            content=[
+                BinaryNode(
+                    tag="usync",
+                    attrs={"context": "interactive", "mode": "query", "sid": sid, "last": "true", "index": "0"},
+                    content=[
+                        BinaryNode(tag="query", attrs={}, content=[BinaryNode(tag="status", attrs={})]),
+                        BinaryNode(
+                            tag="list",
+                            attrs={},
+                            content=[BinaryNode(tag="user", attrs={"jid": j}, content=[]) for j in uniq],
+                        ),
+                    ],
+                )
+            ],
+        )
+
+        res = await self.socket.query(iq, timeout_s=timeout_s)
+        if res.attrs.get("type") != "result" or not isinstance(res.content, list):
+            return {}
+
+        # Parse `usync/list/user/status`.
+        out: dict[str, str | None] = {}
+        usync: BinaryNode | None = None
+        for c in res.content:
+            if isinstance(c, BinaryNode) and c.tag == "usync":
+                usync = c
+                break
+        if not usync or not isinstance(usync.content, list):
+            return {}
+
+        list_node: BinaryNode | None = None
+        for c in usync.content:
+            if isinstance(c, BinaryNode) and c.tag == "list":
+                list_node = c
+                break
+        if not list_node or not isinstance(list_node.content, list):
+            return {}
+
+        for user_node in list_node.content:
+            if not isinstance(user_node, BinaryNode) or user_node.tag != "user":
+                continue
+            jid_ = user_node.attrs.get("jid") or ""
+            if not jid_:
+                continue
+            status_node: BinaryNode | None = None
+            if isinstance(user_node.content, list):
+                for c in user_node.content:
+                    if isinstance(c, BinaryNode) and c.tag == "status":
+                        status_node = c
+                        break
+            if not status_node:
+                continue
+
+            raw = status_node.content
+            status_text = (
+                bytes(raw).decode("utf-8", errors="replace")
+                if isinstance(raw, (bytes, bytearray, memoryview))
+                else (str(raw) if raw is not None else "")
+            )
+
+            if not status_text:
+                # `code=401` => blocked/hidden
+                code = status_node.attrs.get("code")
+                if code and str(code) == "401":
+                    status: str | None = ""
+                else:
+                    status = None
+            else:
+                status = status_text
+
+            out[jid_] = status
+            if update_store:
+                self._upsert_contact_info(jid_, status=status)
+
+        return out
 
     async def send_text(
         self,
@@ -1350,6 +1610,16 @@ class WhatsAppClient:
                     chat_jid = from_jid
                     sender_jid = stanza.attrs.get("participant")
 
+                notify = stanza.attrs.get("notify")
+                if notify and sender_jid and self._is_user_like_jid(sender_jid):
+                    self._upsert_contact_info(sender_jid, notify=notify)
+                if notify and chat_jid and self._is_user_like_jid(chat_jid):
+                    # Only populate chat names from `notify` if we don't have a better one yet.
+                    existing = self.store.get_chat(chat_jid)
+                    if existing is None or not existing.name:
+                        self.store.upsert_chat(ChatInfo(jid=chat_jid, name=notify))
+                    self._upsert_contact_info(chat_jid, notify=notify)
+
                 text = extract_message_text(inner)
                 ts = int(stanza.attrs.get("t") or 0)
                 mid = stanza.attrs.get("id") or ""
@@ -1423,6 +1693,12 @@ class WhatsAppClient:
             self.store.upsert_chat(
                 ChatInfo(jid=jid, name=name, pn_jid=conv.pnJid or None, lid_jid=conv.lidJid or None)
             )
+            pn_jid = str(conv.pnJid) if conv.pnJid else None
+            lid_jid = str(conv.lidJid) if conv.lidJid else None
+            if name and (self._is_user_like_jid(jid) or pn_jid or lid_jid):
+                for j in (jid, pn_jid, lid_jid):
+                    if j and self._is_user_like_jid(j):
+                        self._upsert_contact_info(j, name=name, pn_jid=pn_jid, lid_jid=lid_jid)
 
             for hm in list(conv.messages):
                 if not hm.HasField("message"):
