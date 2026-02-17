@@ -80,7 +80,9 @@ async def main() -> None:
             sender_name = client.get_display_name(str(sender)) if sender else None
             chat_s = f"{chat_name} ({chat})" if chat_name and chat_name != chat else str(chat)
             sender_s = (
-                f"{sender_name} ({sender})" if sender_name and sender_name != sender else str(sender)
+                f"{sender_name} ({sender})"
+                if sender_name and sender_name != sender
+                else str(sender)
             )
             print(f"\n[rx] {chat_s} {sender_s}: {text}")
 

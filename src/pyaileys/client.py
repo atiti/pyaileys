@@ -274,7 +274,12 @@ class WhatsAppClient:
         res = await self.socket.query(
             BinaryNode(
                 tag="iq",
-                attrs={"target": target, "to": S_WHATSAPP_NET, "type": "get", "xmlns": "w:profile:picture"},
+                attrs={
+                    "target": target,
+                    "to": S_WHATSAPP_NET,
+                    "type": "get",
+                    "xmlns": "w:profile:picture",
+                },
                 content=base_content,
             ),
             timeout_s=timeout_s,
@@ -321,13 +326,23 @@ class WhatsAppClient:
             content=[
                 BinaryNode(
                     tag="usync",
-                    attrs={"context": "interactive", "mode": "query", "sid": sid, "last": "true", "index": "0"},
+                    attrs={
+                        "context": "interactive",
+                        "mode": "query",
+                        "sid": sid,
+                        "last": "true",
+                        "index": "0",
+                    },
                     content=[
-                        BinaryNode(tag="query", attrs={}, content=[BinaryNode(tag="status", attrs={})]),
+                        BinaryNode(
+                            tag="query", attrs={}, content=[BinaryNode(tag="status", attrs={})]
+                        ),
                         BinaryNode(
                             tag="list",
                             attrs={},
-                            content=[BinaryNode(tag="user", attrs={"jid": j}, content=[]) for j in uniq],
+                            content=[
+                                BinaryNode(tag="user", attrs={"jid": j}, content=[]) for j in uniq
+                            ],
                         ),
                     ],
                 )
