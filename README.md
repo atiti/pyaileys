@@ -144,6 +144,12 @@ mypy src/pyaileys
 pytest -q
 ```
 
+Optional (recommended): install git pre-commit hooks to auto-run formatting & lint on commit:
+
+```bash
+pre-commit install
+```
+
 ## Releasing to PyPI (Trusted Publishing)
 
 This repo includes a GitHub Actions workflow (`.github/workflows/release.yml`) that publishes to PyPI when you push a

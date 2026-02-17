@@ -28,6 +28,12 @@ mypy src/pyaileys
 pytest -q
 ```
 
+Recommended: install pre-commit hooks so `ruff` formatting/lint runs automatically on commits:
+
+```bash
+pre-commit install
+```
+
 CI runs the same checks on Python 3.11-3.13.
 
 ## Generated Files
