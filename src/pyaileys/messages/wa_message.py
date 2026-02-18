@@ -107,6 +107,15 @@ def extract_message_text(msg: Any) -> str | None:
             return cap
         return "[image]"
 
+    # Video caption (if any), otherwise show a placeholder.
+    if has_field_fn is not None and has_field_fn("videoMessage"):
+        vm = msg.videoMessage
+        cap = getattr(vm, "caption", None)
+        if isinstance(cap, str) and cap:
+            return cap
+        gif = getattr(vm, "gifPlayback", None)
+        return "[gif]" if gif is True else "[video]"
+
     # Audio/PTT has no caption; show a placeholder.
     if has_field_fn is not None and has_field_fn("audioMessage"):
         am = msg.audioMessage
@@ -149,6 +158,10 @@ def extract_message_text(msg: Any) -> str | None:
         if isinstance(lat, (float, int)) and isinstance(lng, (float, int)):
             return f"[live location] {float(lat):.6f},{float(lng):.6f}"
         return "[live location]"
+
+    # Stickers.
+    if has_field_fn is not None and has_field_fn("stickerMessage"):
+        return "[sticker]"
 
     return None
 

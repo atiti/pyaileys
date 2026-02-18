@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import mimetypes
 import secrets
@@ -71,6 +72,7 @@ class WhatsAppClient:
         self.socket = WASocket(config=self.config.socket, auth=auth)
         self.signal = SignalRepository(auth)
         self.store = InMemoryStore()
+        self._app_state_lock = asyncio.Lock()
         # Best-effort alternate-JID mapping (PN <-> LID) for decrypt/send fallbacks.
         # Keys/values are normalized user JIDs (no device).
         self._jid_alt: dict[str, str] = {}
@@ -545,6 +547,7 @@ class WhatsAppClient:
         *,
         mimetype: str = "audio/ogg; codecs=opus",
         seconds: int | None = None,
+        waveform: bytes | None = None,
         fanout: bool = True,
         include_phash: bool = False,
         wait_ack: bool = False,
@@ -556,6 +559,7 @@ class WhatsAppClient:
         """
 
         from .proto import WAProto_pb2 as proto
+        from .media_meta import probe_ogg_opus_duration_s
 
         enc = encrypt_media_bytes(data, media_type="ptt")
         up = await self._upload_encrypted_media(
@@ -573,8 +577,14 @@ class WhatsAppClient:
         am.mimetype = mimetype
         am.ptt = True
         am.mediaKeyTimestamp = int(time.time())
+        if seconds is None:
+            dur = probe_ogg_opus_duration_s(data)
+            if dur is not None:
+                seconds = max(int(dur + 0.5), 0)
         if seconds is not None:
             am.seconds = int(seconds)
+        if waveform is not None:
+            am.waveform = bytes(waveform)
 
         msg.messageContextInfo.messageSecret = secrets.token_bytes(32)
 
@@ -715,6 +725,185 @@ class WhatsAppClient:
             **kwargs,
         )
 
+    async def send_video(
+        self,
+        jid: str,
+        data: bytes,
+        *,
+        mimetype: str = "video/mp4",
+        caption: str | None = None,
+        seconds: int | None = None,
+        gif_playback: bool = False,
+        width: int | None = None,
+        height: int | None = None,
+        jpeg_thumbnail: bytes | None = None,
+        fanout: bool = True,
+        include_phash: bool = False,
+        wait_ack: bool = False,
+        timeout_s: float = 15.0,
+        upload_timeout_s: float = 60.0,
+    ) -> str:
+        """
+        Upload and send a video message.
+
+        Notes:
+        - `seconds` is optional; if omitted we attempt a best-effort MP4 duration probe.
+        - `jpeg_thumbnail` is optional (WhatsApp clients often include it, but it's not required).
+        """
+
+        from .proto import WAProto_pb2 as proto
+        from .media_meta import probe_mp4_duration_s
+
+        media_type = "gif" if gif_playback else "video"
+        enc = encrypt_media_bytes(data, media_type=media_type)
+        up = await self._upload_encrypted_media(
+            media_type=media_type, enc=enc, timeout_s=upload_timeout_s
+        )
+
+        if seconds is None:
+            dur = probe_mp4_duration_s(data)
+            if dur is not None:
+                seconds = max(int(dur + 0.5), 0)
+
+        msg = proto.Message()
+        vm = msg.videoMessage
+        vm.url = up.media_url
+        vm.directPath = up.direct_path
+        vm.mediaKey = enc.media_key
+        vm.fileSha256 = enc.file_sha256
+        vm.fileEncSha256 = enc.file_enc_sha256
+        vm.fileLength = int(enc.file_length)
+        vm.mimetype = mimetype
+        vm.mediaKeyTimestamp = int(time.time())
+        vm.gifPlayback = bool(gif_playback)
+        if caption:
+            vm.caption = caption
+        if seconds is not None:
+            vm.seconds = int(seconds)
+        if width is not None:
+            vm.width = int(width)
+        if height is not None:
+            vm.height = int(height)
+        if jpeg_thumbnail is not None:
+            vm.jpegThumbnail = bytes(jpeg_thumbnail)
+
+        msg.messageContextInfo.messageSecret = secrets.token_bytes(32)
+
+        return await self._send_message(
+            jid,
+            msg,
+            stanza_type="media",
+            enc_extra_attrs={"mediatype": media_type},
+            fanout=fanout,
+            include_phash=include_phash,
+            wait_ack=wait_ack,
+            timeout_s=timeout_s,
+        )
+
+    async def send_video_file(
+        self,
+        jid: str,
+        path: str | Path,
+        *,
+        caption: str | None = None,
+        mimetype: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """
+        Convenience wrapper around `send_video` that reads a local file.
+        """
+
+        p = Path(path).expanduser()
+        data = await asyncio.to_thread(p.read_bytes)
+        mt = mimetype or (mimetypes.guess_type(str(p))[0] or "video/mp4")
+        return await self.send_video(jid, data, mimetype=mt, caption=caption, **kwargs)
+
+    async def send_sticker(
+        self,
+        jid: str,
+        data: bytes,
+        *,
+        mimetype: str = "image/webp",
+        is_animated: bool | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        png_thumbnail: bytes | None = None,
+        fanout: bool = True,
+        include_phash: bool = False,
+        wait_ack: bool = False,
+        timeout_s: float = 15.0,
+        upload_timeout_s: float = 30.0,
+    ) -> str:
+        """
+        Upload and send a sticker.
+
+        Sticker files are typically WebP. Width/height are optional; we attempt a
+        best-effort WebP dimension probe if omitted.
+        """
+
+        from .proto import WAProto_pb2 as proto
+        from .media_meta import probe_webp_size
+
+        if width is None or height is None:
+            size = probe_webp_size(data)
+            if size:
+                width = width or size[0]
+                height = height or size[1]
+
+        enc = encrypt_media_bytes(data, media_type="sticker")
+        up = await self._upload_encrypted_media(
+            media_type="sticker", enc=enc, timeout_s=upload_timeout_s
+        )
+
+        msg = proto.Message()
+        sm = msg.stickerMessage
+        sm.url = up.media_url
+        sm.directPath = up.direct_path
+        sm.mediaKey = enc.media_key
+        sm.fileSha256 = enc.file_sha256
+        sm.fileEncSha256 = enc.file_enc_sha256
+        sm.fileLength = int(enc.file_length)
+        sm.mimetype = mimetype
+        sm.mediaKeyTimestamp = int(time.time())
+        if width is not None:
+            sm.width = int(width)
+        if height is not None:
+            sm.height = int(height)
+        if is_animated is not None:
+            sm.isAnimated = bool(is_animated)
+        if png_thumbnail is not None:
+            sm.pngThumbnail = bytes(png_thumbnail)
+
+        msg.messageContextInfo.messageSecret = secrets.token_bytes(32)
+
+        return await self._send_message(
+            jid,
+            msg,
+            stanza_type="media",
+            enc_extra_attrs={"mediatype": "sticker"},
+            fanout=fanout,
+            include_phash=include_phash,
+            wait_ack=wait_ack,
+            timeout_s=timeout_s,
+        )
+
+    async def send_sticker_file(
+        self,
+        jid: str,
+        path: str | Path,
+        *,
+        mimetype: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """
+        Convenience wrapper around `send_sticker` that reads a local file.
+        """
+
+        p = Path(path).expanduser()
+        data = await asyncio.to_thread(p.read_bytes)
+        mt = mimetype or (mimetypes.guess_type(str(p))[0] or "image/webp")
+        return await self.send_sticker(jid, data, mimetype=mt, **kwargs)
+
     async def send_contact(
         self,
         jid: str,
@@ -802,7 +991,7 @@ class WhatsAppClient:
         """
         Download & decrypt media bytes for an (already decrypted) proto message.
 
-        Supports: imageMessage, audioMessage, documentMessage.
+        Supports: imageMessage, audioMessage, documentMessage, videoMessage, stickerMessage.
         """
 
         # Import lazily; big.
@@ -835,6 +1024,20 @@ class WhatsAppClient:
         elif hasattr(inner, "HasField") and inner.HasField("documentMessage"):
             m = inner.documentMessage
             media_type = "document"
+            url = str(m.url) if m.url else None
+            direct_path = str(m.directPath) if m.directPath else None
+            media_key = bytes(m.mediaKey) if m.mediaKey else None
+            exp_file_sha256 = bytes(m.fileSha256) if m.fileSha256 else None
+        elif hasattr(inner, "HasField") and inner.HasField("videoMessage"):
+            m = inner.videoMessage
+            media_type = "gif" if bool(getattr(m, "gifPlayback", False)) else "video"
+            url = str(m.url) if m.url else None
+            direct_path = str(m.directPath) if m.directPath else None
+            media_key = bytes(m.mediaKey) if m.mediaKey else None
+            exp_file_sha256 = bytes(m.fileSha256) if m.fileSha256 else None
+        elif hasattr(inner, "HasField") and inner.HasField("stickerMessage"):
+            m = inner.stickerMessage
+            media_type = "sticker"
             url = str(m.url) if m.url else None
             direct_path = str(m.directPath) if m.directPath else None
             media_key = bytes(m.mediaKey) if m.mediaKey else None
@@ -935,16 +1138,160 @@ class WhatsAppClient:
             raise ValueError(f"invalid destination jid: {dest_jid!r}")
 
         dest_server = "s.whatsapp.net" if dest_dec.server == "c.us" else dest_dec.server
-        if dest_server == "g.us":
-            raise NotImplementedError(
-                "group send is not implemented yet (missing sender keys/skmsg)"
-            )
 
         me_pn = jid_decode(me.id)
         if not me_pn or not me_pn.user:
             raise RuntimeError("invalid `me.id` in auth creds")
 
         me_lid = jid_decode(me.lid) if me.lid else None
+
+        if dest_server == "g.us":
+            # Group send uses Sender Keys (skmsg) + per-device sender-key distribution (pkmsg/msg).
+            group = await self.socket.group_metadata(dest_jid)
+
+            # Learn LID<->PN mappings advertised in group metadata (best-effort).
+            for p in group.participants:
+                if p.phone_number and p.id.endswith("@lid") and p.phone_number.endswith("@s.whatsapp.net"):
+                    self._remember_jid_mapping(p.phone_number, p.id)
+                if p.lid and p.id.endswith("@s.whatsapp.net") and p.lid.endswith("@lid"):
+                    self._remember_jid_mapping(p.id, p.lid)
+
+            addressing_mode = group.addressing_mode or "lid"
+            group_sender_identity = (
+                me.lid if addressing_mode == "lid" and me.lid else me.id
+            )
+
+            # Include addressing_mode on the stanza (Baileys).
+            stanza_attrs: dict[str, str] = {"addressing_mode": addressing_mode}
+            if group.ephemeral_duration and int(group.ephemeral_duration) > 0:
+                stanza_attrs["expiration"] = str(int(group.ephemeral_duration))
+
+            # Enumerate participant devices to send SenderKeyDistribution to missing devices.
+            participant_ids = [p.id for p in group.participants if p.id]
+            devices = await self.socket.get_usync_devices(participant_ids, context="message")
+
+            # Load sender-key memory map for this group (devices we've already sent a key to).
+            sender_key_map: dict[str, bool] = {}
+            try:
+                raw = (await self.socket.auth.keys.get("sender-key-memory", [dest_jid])).get(dest_jid)
+                if isinstance(raw, dict):
+                    sender_key_map = {str(k): bool(v) for k, v in raw.items()}
+            except Exception:
+                sender_key_map = {}
+
+            # Encode WhatsApp proto.Message and apply WA random padding.
+            msg_bytes = encode_wa_message_bytes(msg.SerializeToString())
+
+            # Encrypt group message and obtain the current sender-key distribution message.
+            ciphertext, dist_bytes = await self.signal.encrypt_group_message(
+                group_jid=dest_jid,
+                me_jid=group_sender_identity,
+                data=msg_bytes,
+            )
+
+            # Filter devices that need sender-key distribution.
+            sender_key_recipients: list[str] = []
+            for dj in devices:
+                if sender_key_map.get(dj):
+                    continue
+                d = jid_decode(dj)
+                if not d or not d.server:
+                    continue
+                # Avoid hosted domains and device 99 (matches Baileys safeguards).
+                if str(d.server).startswith("hosted"):
+                    continue
+                if int(d.device or 0) == 99:
+                    continue
+                sender_key_recipients.append(dj)
+                sender_key_map[dj] = True
+
+            include_device_identity = False
+            to_nodes: list[BinaryNode] = []
+
+            if sender_key_recipients:
+                await self._assert_sessions(sender_key_recipients)
+
+                dmsg = proto.Message()
+                dmsg.senderKeyDistributionMessage.groupId = dest_jid
+                dmsg.senderKeyDistributionMessage.axolotlSenderKeyDistributionMessage = dist_bytes
+                dmsg.messageContextInfo.messageSecret = secrets.token_bytes(32)
+                dmsg_bytes = encode_wa_message_bytes(dmsg.SerializeToString())
+
+                for r in sender_key_recipients:
+                    enc_type, enc_bytes = await self.signal.encrypt_message(r, data=dmsg_bytes)
+                    if enc_type == "pkmsg":
+                        include_device_identity = True
+                    enc_attrs: dict[str, str] = {"v": "2", "type": enc_type}
+                    if enc_extra_attrs:
+                        enc_attrs.update(enc_extra_attrs)
+                    to_nodes.append(
+                        BinaryNode(
+                            tag="to",
+                            attrs={"jid": r},
+                            content=[BinaryNode(tag="enc", attrs=enc_attrs, content=enc_bytes)],
+                        )
+                    )
+
+            stanza_content: list[BinaryNode] = []
+            if to_nodes:
+                stanza_content.append(BinaryNode(tag="participants", attrs={}, content=to_nodes))
+
+            enc_attrs2: dict[str, str] = {"v": "2", "type": "skmsg"}
+            if enc_extra_attrs:
+                enc_attrs2.update(enc_extra_attrs)
+            stanza_content.append(BinaryNode(tag="enc", attrs=enc_attrs2, content=ciphertext))
+
+            if include_device_identity and isinstance(
+                self.socket.auth.creds.account, (bytes, bytearray, memoryview)
+            ):
+                stanza_content.append(
+                    BinaryNode(
+                        tag="device-identity", attrs={}, content=bytes(self.socket.auth.creds.account)
+                    )
+                )
+
+            # Persist updated sender-key memory.
+            with contextlib.suppress(Exception):
+                await self.socket.auth.keys.set({"sender-key-memory": {dest_jid: sender_key_map}})
+
+            msg_id = self.signal.new_message_id()
+            fut = None
+            tag_event = f"tag:{msg_id}"
+            if wait_ack:
+                fut = self.socket.events.wait_for_future(tag_event)
+
+            attrs = {"id": msg_id, "to": dest_jid, "type": stanza_type, **stanza_attrs}
+            await self.socket.send_node(BinaryNode(tag="message", attrs=attrs, content=stanza_content))
+
+            if fut is not None:
+                try:
+                    ack = await asyncio.wait_for(fut, timeout=timeout_s)
+                finally:
+                    self.socket.events._remove_waiter_future(tag_event, fut)
+                if (
+                    isinstance(ack, BinaryNode)
+                    and ack.tag == "ack"
+                    and ack.attrs.get("class") == "message"
+                ):
+                    err = ack.attrs.get("error")
+                    if err:
+                        raise SendRejectedError(code=str(err), ack_attrs=dict(ack.attrs))
+
+            # Best-effort local echo for demos.
+            now_s = int(time.time())
+            text = extract_message_text(msg)
+            self.store.upsert_chat(ChatInfo(jid=dest_jid))
+            self.store.add_message(
+                MessageInfo(
+                    id=msg_id,
+                    chat_jid=dest_jid,
+                    sender_jid=jid_normalized_user(me.id) or me.id,
+                    timestamp_s=now_s,
+                    text=text,
+                    raw=msg,
+                )
+            )
+            return msg_id
 
         # Addressing consistency: match our sender identity to the conversation context.
         sender_identity = (
@@ -1319,6 +1666,418 @@ class WhatsAppClient:
         await self._send_peer_message(msg)
         return request_id
 
+    async def resync_app_state(
+        self,
+        *,
+        collections: list[str] | None = None,
+        validate_macs: bool = True,
+        fallback_on_mac_mismatch: bool = True,
+        timeout_s: float = 60.0,
+        max_attempts: int = 6,
+    ) -> None:
+        """
+        Sync app-state collections (chat/contact state) from WhatsApp servers.
+
+        This mirrors Baileys' `resyncAppState` and is required to build a useful
+        chat/contact model without relying on full phone history sync.
+        """
+
+        from .appstate.keys import expand_app_state_keys
+        from .appstate.processor import (
+            HashState,
+            KeyNotFound,
+            MismatchingContentMAC,
+            MismatchingIndexMAC,
+            PatchMACMismatch,
+            PatchSnapshotMACMismatch,
+            SnapshotMACMismatch,
+            b64_index,
+            process_patch,
+            process_snapshot,
+        )
+        from .appstate.sync import ALL_WA_PATCH_NAMES, extract_syncd_patches
+        # Import lazily; big.
+        from .proto import WAProto_pb2 as proto
+
+        me = self.socket.auth.creds.me
+        if not me:
+            raise RuntimeError("not authenticated")
+
+        cols = list(collections) if collections else list(ALL_WA_PATCH_NAMES)
+        if not cols:
+            return
+
+        async with self._app_state_lock:
+            # Cache expanded keys by base64 key id to avoid repeated hkdf/proto work.
+            expanded_cache: dict[str, Any] = {}
+
+            async def _ensure_expanded_keys(key_ids_b64: set[str]) -> None:
+                missing = [k for k in key_ids_b64 if k and k not in expanded_cache]
+                if not missing:
+                    return
+                res = await self.socket.auth.keys.get("app-state-sync-key", missing)
+                unresolved: list[str] = []
+                for kid_b64 in missing:
+                    raw = res.get(kid_b64)
+                    if not isinstance(raw, (bytes, bytearray, memoryview)):
+                        unresolved.append(kid_b64)
+                        continue
+                    kd = proto.Message.AppStateSyncKeyData()
+                    kd.ParseFromString(bytes(raw))
+                    expanded_cache[kid_b64] = expand_app_state_keys(bytes(kd.keyData))
+
+                # If keys are missing locally, ask the primary device to share them.
+                if unresolved:
+                    await self._request_app_state_sync_keys(unresolved)
+                    deadline = time.monotonic() + 12.0
+                    pending = list(unresolved)
+                    while pending and time.monotonic() < deadline:
+                        await asyncio.sleep(0.5)
+                        got = await self.socket.auth.keys.get("app-state-sync-key", pending)
+                        next_pending: list[str] = []
+                        for kid_b64 in pending:
+                            raw = got.get(kid_b64)
+                            if not isinstance(raw, (bytes, bytearray, memoryview)):
+                                next_pending.append(kid_b64)
+                                continue
+                            kd = proto.Message.AppStateSyncKeyData()
+                            kd.ParseFromString(bytes(raw))
+                            expanded_cache[kid_b64] = expand_app_state_keys(bytes(kd.keyData))
+                        pending = next_pending
+                    unresolved = pending
+
+                if unresolved:
+                    raise KeyNotFound(f"missing app-state sync key {unresolved[0]}")
+
+            def _get_keys_sync(key_id: bytes) -> Any:
+                kid_b64 = base64.b64encode(key_id).decode("ascii")
+                keys = expanded_cache.get(kid_b64)
+                if keys is None:
+                    raise KeyNotFound(f"missing app-state sync key {kid_b64}")
+                return keys
+
+            collections_to_handle: set[str] = set(cols)
+            attempts: dict[str, int] = {}
+            collection_validate_macs: dict[str, bool] = {name: bool(validate_macs) for name in cols}
+
+            while collections_to_handle:
+                # Load stored lt-hash states for requested collections.
+                states: dict[str, HashState] = {}
+                nodes: list[BinaryNode] = []
+                for name in list(collections_to_handle):
+                    try:
+                        got = await self.socket.auth.keys.get("app-state-sync-version", [name])
+                    except Exception:
+                        got = {name: None}
+                    state = HashState.from_store(got.get(name))
+                    states[name] = state
+                    nodes.append(
+                        BinaryNode(
+                            tag="collection",
+                            attrs={
+                                "name": name,
+                                "version": str(int(state.version)),
+                                "return_snapshot": str(not int(state.version)).lower(),
+                            },
+                            content=None,
+                        )
+                    )
+
+                iq = BinaryNode(
+                    tag="iq",
+                    attrs={"to": S_WHATSAPP_NET, "xmlns": "w:sync:app:state", "type": "set"},
+                    content=[BinaryNode(tag="sync", attrs={}, content=nodes)],
+                )
+
+                result = await self.socket.query(iq, timeout_s=timeout_s)
+                collections_raw = extract_syncd_patches(result)
+
+                # Index by name for easier access; server may omit some.
+                by_name: dict[str, Any] = {c.name: c for c in collections_raw if c.name}
+
+                for name in list(collections_to_handle):
+                    col = by_name.get(name)
+                    if col is None:
+                        # Nothing returned; avoid spinning forever.
+                        collections_to_handle.discard(name)
+                        continue
+
+                    state = states.get(name) or HashState()
+
+                    try:
+                        strict_mode = collection_validate_macs.get(name, bool(validate_macs))
+
+                        # Decode snapshot (if present) via ExternalBlobReference.
+                        snapshot = None
+                        if col.snapshot_bytes:
+                            try:
+                                blob_ref = proto.ExternalBlobReference()
+                                blob_ref.ParseFromString(col.snapshot_bytes)
+                                if blob_ref.directPath and blob_ref.mediaKey:
+                                    data = await download_and_decrypt_media(
+                                        direct_path=str(blob_ref.directPath),
+                                        media_key=bytes(blob_ref.mediaKey),
+                                        media_type="md-app-state",
+                                    )
+                                    snap = proto.SyncdSnapshot()
+                                    try:
+                                        snap.ParseFromString(data)
+                                    except Exception:
+                                        # Defensive: some servers may compress; try zlib.
+                                        snap.ParseFromString(inflate_zlib(data))
+                                    snapshot = snap
+                            except Exception:
+                                snapshot = None
+
+                        # Decode patches
+                        patches: list[Any] = []
+                        for raw in col.patch_bytes:
+                            p = proto.SyncdPatch()
+                            p.ParseFromString(raw)
+                            if (not p.HasField("version")) and (col.version_attr is not None):
+                                # Match Baileys: if missing, derive from collection's version attr.
+                                p.version.version = int(col.version_attr) + 1
+                            patches.append(p)
+
+                        # External mutations referenced by patches are downloaded lazily per patch.
+                        async def _download_external_patch(ext: Any) -> list[Any]:
+                            if not ext or not getattr(ext, "directPath", None) or not getattr(ext, "mediaKey", None):
+                                return []
+                            data = await download_and_decrypt_media(
+                                direct_path=str(ext.directPath),
+                                media_key=bytes(ext.mediaKey),
+                                media_type="md-app-state",
+                            )
+                            sm = proto.SyncdMutations()
+                            try:
+                                sm.ParseFromString(data)
+                            except Exception:
+                                sm.ParseFromString(inflate_zlib(data))
+                            return list(sm.mutations)
+
+                        # Prefetch all required app-state keys for this batch (snapshot + patches).
+                        needed_keys_b64: set[str] = set()
+                        if snapshot is not None:
+                            if snapshot.HasField("keyId") and isinstance(snapshot.keyId.id, (bytes, bytearray, memoryview)):
+                                needed_keys_b64.add(base64.b64encode(bytes(snapshot.keyId.id)).decode("ascii"))
+                            for rec in list(snapshot.records):
+                                if rec.HasField("keyId") and isinstance(rec.keyId.id, (bytes, bytearray, memoryview)):
+                                    needed_keys_b64.add(base64.b64encode(bytes(rec.keyId.id)).decode("ascii"))
+
+                        for p in patches:
+                            if p.HasField("keyId") and isinstance(p.keyId.id, (bytes, bytearray, memoryview)):
+                                needed_keys_b64.add(base64.b64encode(bytes(p.keyId.id)).decode("ascii"))
+                            for m in list(p.mutations):
+                                rec = m.record if m.HasField("record") else None
+                                if rec is not None and rec.HasField("keyId") and isinstance(
+                                    rec.keyId.id, (bytes, bytearray, memoryview)
+                                ):
+                                    needed_keys_b64.add(base64.b64encode(bytes(rec.keyId.id)).decode("ascii"))
+
+                        await _ensure_expanded_keys(needed_keys_b64)
+
+                        # Apply snapshot first (resets state).
+                        if snapshot is not None:
+                            new_state = HashState()
+                            snap_res = process_snapshot(
+                                snapshot,
+                                new_state,
+                                _get_keys_sync,
+                                validate_macs=strict_mode,
+                                collection_name=name,
+                            )
+                            state = snap_res.state
+                            # Populate indexValueMap from snapshot records.
+                            for mm in snap_res.mutation_macs:
+                                state.indexValueMap[b64_index(mm.index_mac)] = mm.value_mac
+                            for mut in snap_res.mutations:
+                                self._apply_app_state_mutation(mut)
+
+                            await self.socket.auth.keys.set(
+                                {"app-state-sync-version": {name: state.to_store()}}
+                            )
+
+                        # Apply patches in order.
+                        for p in patches:
+                            if p.HasField("externalMutations"):
+                                extra = await _download_external_patch(p.externalMutations)
+                                if extra:
+                                    p.mutations.extend(extra)
+
+                            state_for_prev = state
+
+                            def _prev(index_mac: bytes) -> bytes | None:
+                                return state_for_prev.indexValueMap.get(b64_index(index_mac))
+
+                            patch_res = process_patch(
+                                p,
+                                state,
+                                _get_keys_sync,
+                                _prev,
+                                validate_macs=strict_mode,
+                                collection_name=name,
+                            )
+                            state = patch_res.state
+
+                            for mm in patch_res.added_macs:
+                                state.indexValueMap[b64_index(mm.index_mac)] = mm.value_mac
+                            for im in patch_res.removed_index_macs:
+                                state.indexValueMap.pop(b64_index(im), None)
+
+                            for mut in patch_res.mutations:
+                                self._apply_app_state_mutation(mut)
+
+                            await self.socket.auth.keys.set(
+                                {"app-state-sync-version": {name: state.to_store()}}
+                            )
+
+                        # Decide if we need to fetch more patches.
+                        if not col.has_more_patches:
+                            collections_to_handle.discard(name)
+
+                    except Exception as e:
+                        err_str = str(e).lower()
+                        is_mac_mismatch = isinstance(
+                            e,
+                            (
+                                SnapshotMACMismatch,
+                                PatchSnapshotMACMismatch,
+                                PatchMACMismatch,
+                                MismatchingContentMAC,
+                                MismatchingIndexMAC,
+                            ),
+                        ) or ("mac mismatch" in err_str)
+
+                        if (
+                            fallback_on_mac_mismatch
+                            and collection_validate_macs.get(name, bool(validate_macs))
+                            and is_mac_mismatch
+                        ):
+                            collection_validate_macs[name] = False
+                            await self.socket.auth.keys.set({"app-state-sync-version": {name: None}})
+                            await self.socket.events.emit(
+                                "app_state.sync_warning",
+                                {
+                                    "collection": name,
+                                    "error": str(e),
+                                    "warning": "MAC validation disabled for this collection; retrying non-strict",
+                                },
+                            )
+                            continue
+
+                        attempts[name] = (attempts.get(name) or 0) + 1
+                        # Clear state and retry from scratch a few times, then give up.
+                        await self.socket.auth.keys.set({"app-state-sync-version": {name: None}})
+                        await self.socket.events.emit(
+                            "app_state.sync_error",
+                            {"collection": name, "attempt": attempts[name], "error": str(e)},
+                        )
+                        if attempts[name] >= max_attempts:
+                            collections_to_handle.discard(name)
+
+            await self.socket.events.emit("app_state.sync", {"collections": cols})
+
+    async def _request_app_state_sync_keys(self, key_ids_b64: list[str]) -> None:
+        """
+        Ask the primary device to share specific app-state sync keys.
+
+        This sends a peer protocol message of type `APP_STATE_SYNC_KEY_REQUEST`.
+        """
+
+        # Import lazily; big.
+        from .proto import WAProto_pb2 as proto
+
+        req = proto.Message.AppStateSyncKeyRequest()
+        added = 0
+        for kid_b64 in key_ids_b64:
+            try:
+                raw = base64.b64decode(kid_b64.encode("ascii"), validate=True)
+            except Exception:
+                continue
+            if not raw:
+                continue
+            req.keyIds.add().keyId = raw
+            added += 1
+
+        if added == 0:
+            return
+
+        msg = proto.Message()
+        msg.protocolMessage.type = proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_REQUEST
+        msg.protocolMessage.appStateSyncKeyRequest.CopyFrom(req)
+        await self._send_peer_message(msg)
+
+    def _apply_app_state_mutation(self, mutation: Any) -> None:
+        """
+        Apply a decoded app-state mutation to the in-memory demo store (best-effort).
+
+        This focuses on:
+        - chat list population (index[1] is the chat id in most mutations)
+        - contact names (contactAction / lidContactAction)
+        - LID<->PN mapping (pnForLidChatAction)
+        """
+
+        try:
+            idx = list(getattr(mutation, "index", []) or [])
+        except Exception:
+            idx = []
+
+        chat_id: str | None = None
+        if len(idx) >= 2:
+            cand = str(idx[1] or "")
+            if cand and "@" in cand:
+                chat_id = cand
+
+        if chat_id:
+            # Ensure it appears in the chat list.
+            self.store.upsert_chat(ChatInfo(jid=chat_id))
+
+        action = getattr(mutation, "action_value", None)
+        if action is None:
+            return
+
+        # ContactAction (pn/lid ids + user-entered names)
+        try:
+            if action.HasField("contactAction"):
+                ca = action.contactAction
+                pn = str(ca.pnJid) if getattr(ca, "pnJid", None) else None
+                lid = str(ca.lidJid) if getattr(ca, "lidJid", None) else None
+                if pn and lid:
+                    self._remember_jid_mapping(pn, lid)
+                name = str(ca.fullName or ca.firstName or "") or None
+                for j in (pn, lid):
+                    if j and self._is_user_like_jid(j):
+                        self._upsert_contact_info(j, name=name, pn_jid=pn, lid_jid=lid)
+                        # For 1:1 chats, also use the contact name as chat name.
+                        existing = self.store.get_chat(j)
+                        if (existing is None or not existing.name) and name:
+                            self.store.upsert_chat(ChatInfo(jid=j, name=name, pn_jid=pn, lid_jid=lid))
+        except Exception:
+            pass
+
+        # LidContactAction (names for LID-only contacts)
+        try:
+            if action.HasField("lidContactAction") and chat_id and self._is_user_like_jid(chat_id):
+                lca = action.lidContactAction
+                name = str(lca.fullName or lca.firstName or "") or None
+                if name:
+                    self._upsert_contact_info(chat_id, name=name)
+                    existing = self.store.get_chat(chat_id)
+                    if existing is None or not existing.name:
+                        self.store.upsert_chat(ChatInfo(jid=chat_id, name=name))
+        except Exception:
+            pass
+
+        # pnForLidChatAction carries LID->PN mapping.
+        try:
+            if action.HasField("pnForLidChatAction") and chat_id:
+                pn = str(action.pnForLidChatAction.pnJid or "") or None
+                if pn:
+                    self._remember_jid_mapping(pn, chat_id)
+                    self.store.upsert_chat(ChatInfo(jid=chat_id, pn_jid=pn))
+        except Exception:
+            pass
+
     async def set_presence(self, available: bool = True) -> None:
         await self.socket.send_node(
             BinaryNode(tag="presence", attrs={"type": "available" if available else "unavailable"})
@@ -1542,7 +2301,7 @@ class WhatsAppClient:
             if not isinstance(child, BinaryNode) or child.tag != "enc":
                 continue
             enc_type = child.attrs.get("type")
-            if enc_type not in ("pkmsg", "msg"):
+            if enc_type not in ("pkmsg", "msg", "skmsg"):
                 continue
             if not isinstance(child.content, (bytes, bytearray, memoryview)):
                 continue
@@ -1556,11 +2315,20 @@ class WhatsAppClient:
                 try:
                     pt: bytes | None = None
                     last_err: Exception | None = None
+                    used: str | None = None
                     for cand in candidates:
                         try:
-                            pt = await self.signal.decrypt_message(
-                                cand, message_type=typ, ciphertext=payload
-                            )
+                            if typ == "skmsg":
+                                pt = await self.signal.decrypt_group_message(
+                                    group_jid=from_jid,
+                                    author_jid=cand,
+                                    ciphertext=payload,
+                                )
+                            else:
+                                pt = await self.signal.decrypt_message(
+                                    cand, message_type=typ, ciphertext=payload
+                                )
+                            used = cand
                             break
                         except Exception as e:
                             last_err = e
@@ -1664,6 +2432,49 @@ class WhatsAppClient:
                     },
                 )
 
+                # Sender-key distribution messages (enables decrypting group skmsg).
+                # Some payloads appear at top-level `Message` even when `deviceSentMessage` is present.
+                dist_items: list[Any] = []
+                for m in (msg, inner):
+                    if hasattr(m, "HasField") and m.HasField("senderKeyDistributionMessage"):
+                        dist_items.append(m.senderKeyDistributionMessage)
+                    if hasattr(m, "HasField") and m.HasField("fastRatchetKeySenderKeyDistributionMessage"):
+                        dist_items.append(m.fastRatchetKeySenderKeyDistributionMessage)
+
+                if dist_items:
+                    author_candidates = [author_jid]
+                    if used and used not in author_candidates:
+                        author_candidates.append(used)
+                    alt2 = self._alt_jid_preserve_device(author_jid)
+                    if alt2 and alt2 not in author_candidates:
+                        author_candidates.append(alt2)
+
+                    for it in dist_items:
+                        try:
+                            group_id = str(it.groupId) if getattr(it, "groupId", None) else ""
+                            dist_raw = (
+                                bytes(it.axolotlSenderKeyDistributionMessage)
+                                if getattr(it, "axolotlSenderKeyDistributionMessage", None)
+                                else b""
+                            )
+                            if not group_id or not dist_raw:
+                                continue
+                        except Exception:
+                            continue
+
+                        for aj in list(dict.fromkeys([j for j in author_candidates if j])):
+                            try:
+                                await self.signal.process_sender_key_distribution_message(
+                                    group_id,
+                                    author_jid=aj,
+                                    distribution_bytes=dist_raw,
+                                )
+                            except Exception as e:
+                                await self.socket.events.emit(
+                                    "sender_key.distribution_error",
+                                    {"group": group_id, "author": aj, "error": str(e)},
+                                )
+
                 # History sync notifications are protocol messages. Some payloads appear at the
                 # top-level `Message` even when `deviceSentMessage` is present, so check both.
                 notif = None
@@ -1678,9 +2489,65 @@ class WhatsAppClient:
                 if notif is not None:
                     ensure_task(self._handle_history_sync(notif), name="pyaileys.history_sync")
 
+                # App state sync key share (store keys for future app-state sync).
+                prot = None
+                if msg.HasField("protocolMessage"):
+                    prot = msg.protocolMessage
+                elif inner.HasField("protocolMessage"):
+                    prot = inner.protocolMessage
+                if prot is not None and int(prot.type or 0) == int(
+                    proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE
+                ):
+                    try:
+                        await self._handle_app_state_sync_key_share(prot.appStateSyncKeyShare)
+                    except Exception as e:
+                        await self.socket.events.emit("app_state.key_share_error", {"error": str(e)})
+
             ensure_task(
                 _decrypt_one(bytes(child.content), typ=enc_type), name="pyaileys.decrypt.enc"
             )
+
+    async def _handle_app_state_sync_key_share(self, share: Any) -> None:
+        """
+        Persist app-state sync keys shared by the phone.
+
+        WhatsApp uses these keys to decrypt app-state snapshots/patches (chat/contact state).
+        We store them in the auth keystore under `app-state-sync-key` keyed by base64 key id.
+        """
+
+        if share is None:
+            return
+        keys = getattr(share, "keys", None)
+        if not keys:
+            return
+
+        updates: dict[str, bytes] = {}
+        latest: str | None = None
+
+        for item in list(keys):
+            try:
+                key_id = bytes(item.keyId.keyId) if item.HasField("keyId") else b""
+                key_data = item.keyData if item.HasField("keyData") else None
+                if not key_id or key_data is None:
+                    continue
+                str_id = base64.b64encode(key_id).decode("ascii")
+                updates[str_id] = bytes(key_data.SerializeToString())
+                latest = str_id
+            except Exception:
+                continue
+
+        if not updates:
+            return
+
+        await self.socket.auth.keys.set({"app-state-sync-key": updates})
+
+        if latest:
+            self.socket.auth.creds.my_app_state_key_id = latest
+            await self.socket.events.emit("creds.update", self.socket.auth.creds)
+
+        await self.socket.events.emit(
+            "app_state.keys", {"count": len(updates), "latest": latest}
+        )
 
     async def _handle_history_sync(self, notif: Any) -> None:
         """

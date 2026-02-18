@@ -22,19 +22,21 @@ This is an early-stage protocol client.
 What works today:
 
 - MD session login + QR pairing
-- Basic 1:1 Signal E2E (`pkmsg`/`msg`) decrypt/encrypt
-- Basic text send (with multi-device fanout)
+- 1:1 Signal E2E (`pkmsg`/`msg`) decrypt/encrypt
+- Group Signal E2E (`skmsg`) decrypt/encrypt (Sender Keys)
+- Text send (1:1 multi-device fanout, groups via Sender Keys)
 - Typing/recording indications (`chatstate`)
-- Media send (image, PTT voice note, documents, static location, contacts)
-- Media download/decrypt (image, audio/PTT, documents)
+- Media send (image, PTT voice note, documents, video, stickers, static location, contacts)
+- Media download/decrypt (image, audio/PTT, documents, video, stickers)
 - History Sync ingestion into an in-memory store
 - Best-effort contact/profile metadata (names from history sync + `notify` push names, profile picture URL, status/about)
 
 ## Limitations (Important)
 
-- Group E2E (`skmsg`) / Sender Keys: not implemented
-- Media support is partial: no video/stickers yet, and no automatic thumbnails/duration/waveform
-- App-state sync + rich chat/contact model: minimal (demo store; contact names/profile are best-effort)
+- Media thumbnails + waveform: not generated automatically (you can supply `jpeg_thumbnail` / `waveform`)
+- App-state sync supports snapshot + patch processing and updates the in-memory store (best-effort model application)
+- App-state sync depends on app-state keys from the primary phone; the client requests missing keys, but very old sessions may require re-pairing
+- Chat/contact model: minimal demo store; contact names/profile are best-effort
 - API stability: no guarantees yet (pre-1.0)
 
 ## Legal / Safety
@@ -119,11 +121,19 @@ Kitchen sink (interactive):
 python examples/demo_app.py --auth ./auth --log-nodes
 ```
 
-Simple CLI (decrypt + store + send text/media):
+Simple CLI (decrypt + store + send text/media, includes `appsync`):
 
 ```bash
 python examples/simple_cli.py --auth ./auth
 ```
+
+Automated end-to-end smoke test against your real linked account:
+
+```bash
+tools/e2e_smoke.sh --jid 4527148803@s.whatsapp.net --auth ./auth
+```
+
+This script drives `examples/simple_cli.py`, sends test messages/media, downloads media back, and prints a pass/fail checklist.
 
 QR-only helper (writes `qr.svg` into the auth dir if `qrcode` extra is installed):
 
@@ -181,3 +191,8 @@ protoc -Iproto --python_out=src/pyaileys/proto proto/WAProto.proto
 ## Contributing
 
 See `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `SECURITY.md`.
+Simple chat CLI (includes `appsync` for full app-state sync):
+
+```bash
+python examples/simple_cli.py --auth ./auth
+```

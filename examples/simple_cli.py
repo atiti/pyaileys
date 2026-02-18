@@ -94,16 +94,28 @@ async def main() -> None:
     async def on_err(ev) -> None:
         print("\n[decrypt_error]", ev)
 
+    async def on_appsync(ev) -> None:
+        print("\n[app_state.sync]", ev)
+
+    async def on_appsync_err(ev) -> None:
+        print("\n[app_state.sync_error]", ev)
+
+    async def on_appsync_warn(ev) -> None:
+        print("\n[app_state.sync_warning]", ev)
+
     client.on("connection.update", on_update)
     client.on("creds.update", on_creds_update)
     client.on("message.decrypted", on_msg)
     client.on("message.decrypt_error", on_err)
     client.on("history.sync", on_history)
+    client.on("app_state.sync", on_appsync)
+    client.on("app_state.sync_warning", on_appsync_warn)
+    client.on("app_state.sync_error", on_appsync_err)
 
     await client.connect()
 
     print(
-        "\nCommands: help, sync, sync_chat <jid> [n], chats, history <jid> [n], send <jid> <text>, typing <jid> on|off, recording <jid> on|off, name <jid>, ppic <jid> [preview|image], status <jid> [jid...], send_image <jid> <path> [caption], send_ptt <jid> <path> [seconds], send_doc <jid> <path> [caption], send_vcard <jid> <path> [display_name], send_contacts <jid> <vcf1> <vcf2>..., send_location <jid> <lat> <lng> [name], download <chat_jid> <msg_id> <out>, me, quit\n"
+        "\nCommands: help, appsync [collection...], sync, sync_chat <jid> [n], chats, history <jid> [n], send <jid> <text>, typing <jid> on|off, recording <jid> on|off, name <jid>, ppic <jid> [preview|image], status <jid> [jid...], send_image <jid> <path> [caption], send_ptt <jid> <path> [seconds], send_doc <jid> <path> [caption], send_video <jid> <path> [caption], send_sticker <jid> <path>, send_vcard <jid> <path> [display_name], send_contacts <jid> <vcf1> <vcf2>..., send_location <jid> <lat> <lng> [name], download <chat_jid> <msg_id> <out>, me, quit\n"
     )
 
     while True:
@@ -124,6 +136,7 @@ async def main() -> None:
 
         if cmd == "help":
             print("help")
+            print("appsync [collection...]  (sync app-state from server)")
             print("sync  (request full history sync from phone)")
             print("sync_chat <jid> [n]  (request on-demand history for a chat)")
             print("chats")
@@ -137,6 +150,8 @@ async def main() -> None:
             print("send_image <jid> <path> [caption]")
             print("send_ptt <jid> <path> [seconds]")
             print("send_doc <jid> <path> [caption]")
+            print("send_video <jid> <path> [caption]")
+            print("send_sticker <jid> <path>")
             print("send_vcard <jid> <path> [display_name]")
             print("send_contacts <jid> <vcf1> <vcf2>...")
             print("send_location <jid> <lat> <lng> [name]")
@@ -169,6 +184,15 @@ async def main() -> None:
             try:
                 req = await client.request_full_history_sync()
                 print("requested:", req)
+            except Exception as e:
+                print("error:", e)
+            continue
+
+        if cmd == "appsync":
+            try:
+                cols = [c for c in argstr.split() if c] if argstr.strip() else None
+                await client.resync_app_state(collections=cols)
+                print("ok")
             except Exception as e:
                 print("error:", e)
             continue
@@ -338,6 +362,39 @@ async def main() -> None:
             caption = parts[2] if len(parts) >= 3 else None
             try:
                 mid = await client.send_document_file(jid, path, caption=caption, wait_ack=True)
+                print("sent:", mid)
+            except SendRejectedError as e:
+                print(f"rejected: error={e.code} ack={e.ack_attrs}")
+            except Exception as e:
+                print("error:", e)
+            continue
+
+        if cmd == "send_video":
+            parts = argstr.split(" ", 2) if argstr else []
+            if len(parts) < 2:
+                print("usage: send_video <jid> <path> [caption]")
+                continue
+            jid = parts[0]
+            path = parts[1]
+            caption = parts[2] if len(parts) >= 3 else None
+            try:
+                mid = await client.send_video_file(jid, path, caption=caption, wait_ack=True)
+                print("sent:", mid)
+            except SendRejectedError as e:
+                print(f"rejected: error={e.code} ack={e.ack_attrs}")
+            except Exception as e:
+                print("error:", e)
+            continue
+
+        if cmd == "send_sticker":
+            parts = argstr.split(" ", 1) if argstr else []
+            if len(parts) < 2:
+                print("usage: send_sticker <jid> <path>")
+                continue
+            jid = parts[0]
+            path = parts[1]
+            try:
+                mid = await client.send_sticker_file(jid, path, wait_ack=True)
                 print("sent:", mid)
             except SendRejectedError as e:
                 print(f"rejected: error={e.code} ack={e.ack_attrs}")

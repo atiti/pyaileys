@@ -224,7 +224,9 @@ class SignalRepository:
     """
     Minimal Signal Protocol implementation for WhatsApp Web multi-device.
 
-    This is intentionally scoped to 1:1 sessions (`pkmsg`/`msg`) first.
+    Supports:
+    - 1:1 sessions (`pkmsg`/`msg`)
+    - group sender keys (`skmsg`)
     """
 
     def __init__(
@@ -768,3 +770,133 @@ class SignalRepository:
         me = self._store.creds.me
         user_id = me.id if me and me.id else None
         return _generate_wa_message_id_v2(user_id)
+
+    # --- Group sender keys (skmsg) ---
+
+    async def _load_sender_key_record(self, sender_key_name: str) -> Any:
+        proto = _get_proto()
+        res = await self._store.keys.get("sender-key", [sender_key_name])
+        raw = res.get(sender_key_name)
+        rec = proto.SenderKeyRecordStructure()
+        if raw and isinstance(raw, (bytes, bytearray, memoryview)):
+            rec.ParseFromString(bytes(raw))
+        return rec
+
+    async def _store_sender_key_record(self, sender_key_name: str, record: Any) -> None:
+        await self._store.keys.set({"sender-key": {sender_key_name: record.SerializeToString()}})
+
+    async def process_sender_key_distribution_message(
+        self,
+        group_jid: str,
+        *,
+        author_jid: str,
+        distribution_bytes: bytes,
+    ) -> None:
+        """
+        Process an inbound sender-key distribution message.
+
+        `distribution_bytes` must be the raw bytes from:
+        `proto.Message.senderKeyDistributionMessage.axolotlSenderKeyDistributionMessage`.
+        """
+
+        from .group import GroupSessionBuilder, SenderKeyDistributionMessage, jid_to_sender_key_name
+
+        name = jid_to_sender_key_name(group_jid, author_jid)
+        lock_key = f"sender-key:{name.serialize()}"
+        async with self._lock_for(lock_key):
+
+            class _Store:
+                async def load_sender_key(self, sender_key_name: Any) -> Any:
+                    return await self._load_sender_key_record(sender_key_name.serialize())
+
+                async def store_sender_key(self, sender_key_name: Any, record: Any) -> None:
+                    await self._store_sender_key_record(sender_key_name.serialize(), record)
+
+                def __init__(self, repo: SignalRepository) -> None:
+                    self._load_sender_key_record = repo._load_sender_key_record
+                    self._store_sender_key_record = repo._store_sender_key_record
+
+            store = _Store(self)
+            builder = GroupSessionBuilder(store, curve=self._curve)
+            msg = SenderKeyDistributionMessage(serialized=bytes(distribution_bytes))
+            await builder.process(name, msg)
+
+    async def encrypt_group_message(
+        self,
+        *,
+        group_jid: str,
+        me_jid: str,
+        data: bytes,
+    ) -> tuple[bytes, bytes]:
+        """
+        Encrypt a group message using sender keys.
+
+        Args:
+            group_jid: group JID (e.g. `123-456@g.us`)
+            me_jid: our device JID for sender-key identity (e.g. `me:24@s.whatsapp.net` or `@lid`)
+            data: WA-padded plaintext bytes (`encode_wa_message_bytes(...)`)
+
+        Returns:
+            (ciphertext, sender_key_distribution_bytes)
+        """
+
+        from .group import GroupCipher, GroupSessionBuilder, jid_to_sender_key_name
+
+        name = jid_to_sender_key_name(group_jid, me_jid)
+        lock_key = f"sender-key:{name.serialize()}"
+        async with self._lock_for(lock_key):
+
+            class _Store:
+                async def load_sender_key(self, sender_key_name: Any) -> Any:
+                    return await self._load_sender_key_record(sender_key_name.serialize())
+
+                async def store_sender_key(self, sender_key_name: Any, record: Any) -> None:
+                    await self._store_sender_key_record(sender_key_name.serialize(), record)
+
+                def __init__(self, repo: SignalRepository) -> None:
+                    self._load_sender_key_record = repo._load_sender_key_record
+                    self._store_sender_key_record = repo._store_sender_key_record
+
+            store = _Store(self)
+
+            builder = GroupSessionBuilder(store, curve=self._curve)
+            dist = await builder.create(name)
+
+            cipher = GroupCipher(store, name, curve=self._curve)
+            ciphertext = await cipher.encrypt(bytes(data))
+
+            return bytes(ciphertext), bytes(dist.serialize())
+
+    async def decrypt_group_message(
+        self,
+        *,
+        group_jid: str,
+        author_jid: str,
+        ciphertext: bytes,
+    ) -> bytes:
+        """
+        Decrypt a `skmsg` payload.
+
+        Returns the decrypted bytes (still WhatsApp-padded).
+        """
+
+        from .group import GroupCipher, jid_to_sender_key_name
+
+        name = jid_to_sender_key_name(group_jid, author_jid)
+        lock_key = f"sender-key:{name.serialize()}"
+        async with self._lock_for(lock_key):
+
+            class _Store:
+                async def load_sender_key(self, sender_key_name: Any) -> Any:
+                    return await self._load_sender_key_record(sender_key_name.serialize())
+
+                async def store_sender_key(self, sender_key_name: Any, record: Any) -> None:
+                    await self._store_sender_key_record(sender_key_name.serialize(), record)
+
+                def __init__(self, repo: SignalRepository) -> None:
+                    self._load_sender_key_record = repo._load_sender_key_record
+                    self._store_sender_key_record = repo._store_sender_key_record
+
+            store = _Store(self)
+            cipher = GroupCipher(store, name, curve=self._curve)
+            return await cipher.decrypt(bytes(ciphertext))

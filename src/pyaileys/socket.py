@@ -7,6 +7,7 @@ import datetime as dt
 import hmac
 import time
 from dataclasses import dataclass
+from dataclasses import field
 
 from .auth.creds import Contact, KeyPair
 from .auth.state import AuthenticationState
@@ -61,6 +62,22 @@ class MediaConnInfo:
     auth: str
     ttl_s: int
     fetched_at_s: float
+
+
+@dataclass(frozen=True, slots=True)
+class GroupParticipant:
+    id: str
+    phone_number: str | None = None
+    lid: str | None = None
+    admin: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GroupMetadata:
+    id: str
+    addressing_mode: str = "lid"  # "lid" | "pn"
+    ephemeral_duration: int | None = None
+    participants: list[GroupParticipant] = field(default_factory=list)
 
 
 class WASocket:
@@ -281,6 +298,79 @@ class WASocket:
         )
 
         return list(dict.fromkeys([*explicit, *extracted]))
+
+    async def group_metadata(self, jid: str) -> GroupMetadata:
+        """
+        Fetch group metadata needed for sender-key distribution (participants + addressing mode).
+
+        Mirrors Baileys' `groupMetadata()` (subset).
+        """
+
+        def _child(n: BinaryNode | None, tag: str) -> BinaryNode | None:
+            if not n or not isinstance(n.content, list):
+                return None
+            for c in n.content:
+                if isinstance(c, BinaryNode) and c.tag == tag:
+                    return c
+            return None
+
+        def _children(n: BinaryNode | None, tag: str) -> list[BinaryNode]:
+            if not n or not isinstance(n.content, list):
+                return []
+            return [c for c in n.content if isinstance(c, BinaryNode) and c.tag == tag]
+
+        res = await self.query(
+            BinaryNode(
+                tag="iq",
+                attrs={"to": jid, "type": "get", "xmlns": "w:g2"},
+                content=[BinaryNode(tag="query", attrs={"request": "interactive"}, content=None)],
+            )
+        )
+
+        group = res if res.tag == "group" else _child(res, "group")
+        if not group:
+            raise TransportError("group metadata response missing <group/>")
+
+        gid = group.attrs.get("id") or jid
+        if "@" not in gid:
+            from .wabinary.jid import jid_encode
+
+            gid = jid_encode(gid, "g.us")
+
+        addressing_mode = group.attrs.get("addressing_mode") or "lid"
+        if addressing_mode not in ("lid", "pn"):
+            addressing_mode = "lid"
+
+        eph = None
+        eph_node = _child(group, "ephemeral")
+        if eph_node:
+            raw = eph_node.attrs.get("expiration")
+            if raw is not None:
+                try:
+                    eph = int(raw)
+                except Exception:
+                    eph = None
+
+        parts: list[GroupParticipant] = []
+        for p in _children(group, "participant"):
+            pj = p.attrs.get("jid")
+            if not pj:
+                continue
+            parts.append(
+                GroupParticipant(
+                    id=pj,
+                    phone_number=p.attrs.get("phone_number"),
+                    lid=p.attrs.get("lid"),
+                    admin=p.attrs.get("type"),
+                )
+            )
+
+        return GroupMetadata(
+            id=gid,
+            addressing_mode=addressing_mode,
+            ephemeral_duration=eph,
+            participants=parts,
+        )
 
     async def refresh_media_conn(self, *, force: bool = False) -> MediaConnInfo:
         """
