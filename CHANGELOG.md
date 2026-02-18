@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.1.4] - 2026-02-18
+
+### Fixed
+
+- GitHub Actions CI/Release lint failures introduced by the app-state/media/group sender-key changes
+- Ruff/mypy parity with CI across Python 3.11/3.12/3.13
+
 ## [0.1.3] - 2026-02-18
 
 ### Added
