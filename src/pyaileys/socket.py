@@ -6,8 +6,7 @@ import contextlib
 import datetime as dt
 import hmac
 import time
-from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import dataclass, field
 
 from .auth.creds import Contact, KeyPair
 from .auth.state import AuthenticationState

@@ -558,8 +558,8 @@ class WhatsAppClient:
         Upload and send a PTT (voice note).
         """
 
-        from .proto import WAProto_pb2 as proto
         from .media_meta import probe_ogg_opus_duration_s
+        from .proto import WAProto_pb2 as proto
 
         enc = encrypt_media_bytes(data, media_type="ptt")
         up = await self._upload_encrypted_media(
@@ -751,8 +751,8 @@ class WhatsAppClient:
         - `jpeg_thumbnail` is optional (WhatsApp clients often include it, but it's not required).
         """
 
-        from .proto import WAProto_pb2 as proto
         from .media_meta import probe_mp4_duration_s
+        from .proto import WAProto_pb2 as proto
 
         media_type = "gif" if gif_playback else "video"
         enc = encrypt_media_bytes(data, media_type=media_type)
@@ -841,8 +841,8 @@ class WhatsAppClient:
         best-effort WebP dimension probe if omitted.
         """
 
-        from .proto import WAProto_pb2 as proto
         from .media_meta import probe_webp_size
+        from .proto import WAProto_pb2 as proto
 
         if width is None or height is None:
             size = probe_webp_size(data)
@@ -1151,15 +1151,17 @@ class WhatsAppClient:
 
             # Learn LID<->PN mappings advertised in group metadata (best-effort).
             for p in group.participants:
-                if p.phone_number and p.id.endswith("@lid") and p.phone_number.endswith("@s.whatsapp.net"):
+                if (
+                    p.phone_number
+                    and p.id.endswith("@lid")
+                    and p.phone_number.endswith("@s.whatsapp.net")
+                ):
                     self._remember_jid_mapping(p.phone_number, p.id)
                 if p.lid and p.id.endswith("@s.whatsapp.net") and p.lid.endswith("@lid"):
                     self._remember_jid_mapping(p.id, p.lid)
 
             addressing_mode = group.addressing_mode or "lid"
-            group_sender_identity = (
-                me.lid if addressing_mode == "lid" and me.lid else me.id
-            )
+            group_sender_identity = me.lid if addressing_mode == "lid" and me.lid else me.id
 
             # Include addressing_mode on the stanza (Baileys).
             stanza_attrs: dict[str, str] = {"addressing_mode": addressing_mode}
@@ -1173,7 +1175,9 @@ class WhatsAppClient:
             # Load sender-key memory map for this group (devices we've already sent a key to).
             sender_key_map: dict[str, bool] = {}
             try:
-                raw = (await self.socket.auth.keys.get("sender-key-memory", [dest_jid])).get(dest_jid)
+                raw = (await self.socket.auth.keys.get("sender-key-memory", [dest_jid])).get(
+                    dest_jid
+                )
                 if isinstance(raw, dict):
                     sender_key_map = {str(k): bool(v) for k, v in raw.items()}
             except Exception:
@@ -1246,7 +1250,9 @@ class WhatsAppClient:
             ):
                 stanza_content.append(
                     BinaryNode(
-                        tag="device-identity", attrs={}, content=bytes(self.socket.auth.creds.account)
+                        tag="device-identity",
+                        attrs={},
+                        content=bytes(self.socket.auth.creds.account),
                     )
                 )
 
@@ -1261,7 +1267,9 @@ class WhatsAppClient:
                 fut = self.socket.events.wait_for_future(tag_event)
 
             attrs = {"id": msg_id, "to": dest_jid, "type": stanza_type, **stanza_attrs}
-            await self.socket.send_node(BinaryNode(tag="message", attrs=attrs, content=stanza_content))
+            await self.socket.send_node(
+                BinaryNode(tag="message", attrs=attrs, content=stanza_content)
+            )
 
             if fut is not None:
                 try:
@@ -1364,7 +1372,7 @@ class WhatsAppClient:
         dsm.messageContextInfo.CopyFrom(msg.messageContextInfo)
         dsm_bytes = encode_wa_message_bytes(dsm.SerializeToString())
 
-        to_nodes: list[BinaryNode] = []
+        participant_nodes: list[BinaryNode] = []
         include_device_identity = False
 
         phash = (
@@ -1379,29 +1387,29 @@ class WhatsAppClient:
             enc_type, enc_bytes = await self.signal.encrypt_message(r, data=payload)
             if enc_type == "pkmsg":
                 include_device_identity = True
-            enc_attrs: dict[str, str] = {"v": "2", "type": enc_type}
+            participant_enc_attrs: dict[str, str] = {"v": "2", "type": enc_type}
             if enc_extra_attrs:
-                enc_attrs.update(enc_extra_attrs)
+                participant_enc_attrs.update(enc_extra_attrs)
             if phash:
-                enc_attrs["phash"] = phash
-            to_nodes.append(
+                participant_enc_attrs["phash"] = phash
+            participant_nodes.append(
                 BinaryNode(
                     tag="to",
                     attrs={"jid": r},
                     content=[
-                        BinaryNode(tag="enc", attrs=enc_attrs, content=enc_bytes),
+                        BinaryNode(tag="enc", attrs=participant_enc_attrs, content=enc_bytes),
                     ],
                 )
             )
 
-        stanza_content: list[BinaryNode] = [
-            BinaryNode(tag="participants", attrs={}, content=to_nodes),
+        message_content: list[BinaryNode] = [
+            BinaryNode(tag="participants", attrs={}, content=participant_nodes),
         ]
 
         if include_device_identity and isinstance(
             self.socket.auth.creds.account, (bytes, bytearray, memoryview)
         ):
-            stanza_content.append(
+            message_content.append(
                 BinaryNode(
                     tag="device-identity", attrs={}, content=bytes(self.socket.auth.creds.account)
                 )
@@ -1428,7 +1436,7 @@ class WhatsAppClient:
             if alt:
                 tc_token = await _lookup_tc_token(alt)
         if tc_token is not None:
-            stanza_content.append(BinaryNode(tag="tctoken", attrs={}, content=tc_token))
+            message_content.append(BinaryNode(tag="tctoken", attrs={}, content=tc_token))
 
         msg_id = self.signal.new_message_id()
         fut = None
@@ -1440,7 +1448,7 @@ class WhatsAppClient:
             BinaryNode(
                 tag="message",
                 attrs={"id": msg_id, "to": dest_jid, "type": stanza_type},
-                content=stanza_content,
+                content=message_content,
             )
         )
 
@@ -1696,6 +1704,7 @@ class WhatsAppClient:
             process_snapshot,
         )
         from .appstate.sync import ALL_WA_PATCH_NAMES, extract_syncd_patches
+
         # Import lazily; big.
         from .proto import WAProto_pb2 as proto
 
@@ -1841,7 +1850,11 @@ class WhatsAppClient:
 
                         # External mutations referenced by patches are downloaded lazily per patch.
                         async def _download_external_patch(ext: Any) -> list[Any]:
-                            if not ext or not getattr(ext, "directPath", None) or not getattr(ext, "mediaKey", None):
+                            if (
+                                not ext
+                                or not getattr(ext, "directPath", None)
+                                or not getattr(ext, "mediaKey", None)
+                            ):
                                 return []
                             data = await download_and_decrypt_media(
                                 direct_path=str(ext.directPath),
@@ -1858,21 +1871,37 @@ class WhatsAppClient:
                         # Prefetch all required app-state keys for this batch (snapshot + patches).
                         needed_keys_b64: set[str] = set()
                         if snapshot is not None:
-                            if snapshot.HasField("keyId") and isinstance(snapshot.keyId.id, (bytes, bytearray, memoryview)):
-                                needed_keys_b64.add(base64.b64encode(bytes(snapshot.keyId.id)).decode("ascii"))
+                            if snapshot.HasField("keyId") and isinstance(
+                                snapshot.keyId.id, (bytes, bytearray, memoryview)
+                            ):
+                                needed_keys_b64.add(
+                                    base64.b64encode(bytes(snapshot.keyId.id)).decode("ascii")
+                                )
                             for rec in list(snapshot.records):
-                                if rec.HasField("keyId") and isinstance(rec.keyId.id, (bytes, bytearray, memoryview)):
-                                    needed_keys_b64.add(base64.b64encode(bytes(rec.keyId.id)).decode("ascii"))
-
-                        for p in patches:
-                            if p.HasField("keyId") and isinstance(p.keyId.id, (bytes, bytearray, memoryview)):
-                                needed_keys_b64.add(base64.b64encode(bytes(p.keyId.id)).decode("ascii"))
-                            for m in list(p.mutations):
-                                rec = m.record if m.HasField("record") else None
-                                if rec is not None and rec.HasField("keyId") and isinstance(
+                                if rec.HasField("keyId") and isinstance(
                                     rec.keyId.id, (bytes, bytearray, memoryview)
                                 ):
-                                    needed_keys_b64.add(base64.b64encode(bytes(rec.keyId.id)).decode("ascii"))
+                                    needed_keys_b64.add(
+                                        base64.b64encode(bytes(rec.keyId.id)).decode("ascii")
+                                    )
+
+                        for p in patches:
+                            if p.HasField("keyId") and isinstance(
+                                p.keyId.id, (bytes, bytearray, memoryview)
+                            ):
+                                needed_keys_b64.add(
+                                    base64.b64encode(bytes(p.keyId.id)).decode("ascii")
+                                )
+                            for m in list(p.mutations):
+                                rec = m.record if m.HasField("record") else None
+                                if (
+                                    rec is not None
+                                    and rec.HasField("keyId")
+                                    and isinstance(rec.keyId.id, (bytes, bytearray, memoryview))
+                                ):
+                                    needed_keys_b64.add(
+                                        base64.b64encode(bytes(rec.keyId.id)).decode("ascii")
+                                    )
 
                         await _ensure_expanded_keys(needed_keys_b64)
 
@@ -1906,8 +1935,10 @@ class WhatsAppClient:
 
                             state_for_prev = state
 
-                            def _prev(index_mac: bytes) -> bytes | None:
-                                return state_for_prev.indexValueMap.get(b64_index(index_mac))
+                            def _prev(
+                                index_mac: bytes, _state_for_prev: HashState = state_for_prev
+                            ) -> bytes | None:
+                                return _state_for_prev.indexValueMap.get(b64_index(index_mac))
 
                             patch_res = process_patch(
                                 p,
@@ -1954,7 +1985,9 @@ class WhatsAppClient:
                             and is_mac_mismatch
                         ):
                             collection_validate_macs[name] = False
-                            await self.socket.auth.keys.set({"app-state-sync-version": {name: None}})
+                            await self.socket.auth.keys.set(
+                                {"app-state-sync-version": {name: None}}
+                            )
                             await self.socket.events.emit(
                                 "app_state.sync_warning",
                                 {
@@ -2051,7 +2084,9 @@ class WhatsAppClient:
                         # For 1:1 chats, also use the contact name as chat name.
                         existing = self.store.get_chat(j)
                         if (existing is None or not existing.name) and name:
-                            self.store.upsert_chat(ChatInfo(jid=j, name=name, pn_jid=pn, lid_jid=lid))
+                            self.store.upsert_chat(
+                                ChatInfo(jid=j, name=name, pn_jid=pn, lid_jid=lid)
+                            )
         except Exception:
             pass
 
@@ -2438,7 +2473,9 @@ class WhatsAppClient:
                 for m in (msg, inner):
                     if hasattr(m, "HasField") and m.HasField("senderKeyDistributionMessage"):
                         dist_items.append(m.senderKeyDistributionMessage)
-                    if hasattr(m, "HasField") and m.HasField("fastRatchetKeySenderKeyDistributionMessage"):
+                    if hasattr(m, "HasField") and m.HasField(
+                        "fastRatchetKeySenderKeyDistributionMessage"
+                    ):
                         dist_items.append(m.fastRatchetKeySenderKeyDistributionMessage)
 
                 if dist_items:
@@ -2501,7 +2538,9 @@ class WhatsAppClient:
                     try:
                         await self._handle_app_state_sync_key_share(prot.appStateSyncKeyShare)
                     except Exception as e:
-                        await self.socket.events.emit("app_state.key_share_error", {"error": str(e)})
+                        await self.socket.events.emit(
+                            "app_state.key_share_error", {"error": str(e)}
+                        )
 
             ensure_task(
                 _decrypt_one(bytes(child.content), typ=enc_type), name="pyaileys.decrypt.enc"
@@ -2545,9 +2584,7 @@ class WhatsAppClient:
             self.socket.auth.creds.my_app_state_key_id = latest
             await self.socket.events.emit("creds.update", self.socket.auth.creds)
 
-        await self.socket.events.emit(
-            "app_state.keys", {"count": len(updates), "latest": latest}
-        )
+        await self.socket.events.emit("app_state.keys", {"count": len(updates), "latest": latest})
 
     async def _handle_history_sync(self, notif: Any) -> None:
         """

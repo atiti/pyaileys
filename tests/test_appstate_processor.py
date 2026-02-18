@@ -150,4 +150,3 @@ def test_process_patch_overwrite_with_mac_validation() -> None:
     )
     assert res.state.version == 2
     assert len(res.added_macs) == 1
-

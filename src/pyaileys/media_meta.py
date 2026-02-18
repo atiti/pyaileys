@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Lightweight media metadata probing (pure Python).
 
@@ -11,6 +9,8 @@ and provides best-effort helpers used when composing media messages:
 
 If a probe fails, functions return `None` rather than raising.
 """
+
+from __future__ import annotations
 
 from typing import Final
 
@@ -157,26 +157,30 @@ def probe_webp_size(data: bytes) -> tuple[int, int] | None:
             if chunk_end > len(b):
                 break
 
-            if chunk_type == b"VP8 ":
+            if (
+                chunk_type == b"VP8 "
+                and chunk_size >= 10
+                and b[chunk_start + 3 : chunk_start + 6] == b"\x9d\x01\x2a"
+            ):
                 # Lossy bitstream header.
-                if chunk_size >= 10 and b[chunk_start + 3 : chunk_start + 6] == b"\x9d\x01\x2a":
-                    w = int.from_bytes(b[chunk_start + 6 : chunk_start + 8], "little") & 0x3FFF
-                    h = int.from_bytes(b[chunk_start + 8 : chunk_start + 10], "little") & 0x3FFF
-                    return int(w), int(h)
+                w = int.from_bytes(b[chunk_start + 6 : chunk_start + 8], "little") & 0x3FFF
+                h = int.from_bytes(b[chunk_start + 8 : chunk_start + 10], "little") & 0x3FFF
+                return int(w), int(h)
 
-            if chunk_type == b"VP8L":
+            if chunk_type == b"VP8L" and chunk_size >= 5 and b[chunk_start] == 0x2F:
                 # Lossless header: signature(1) + 4 bytes.
-                if chunk_size >= 5 and b[chunk_start] == 0x2F:
-                    bits = int.from_bytes(b[chunk_start + 1 : chunk_start + 5], "little", signed=False)
-                    w = (bits & 0x3FFF) + 1
-                    h = ((bits >> 14) & 0x3FFF) + 1
-                    return int(w), int(h)
+                bits = int.from_bytes(b[chunk_start + 1 : chunk_start + 5], "little", signed=False)
+                w = (bits & 0x3FFF) + 1
+                h = ((bits >> 14) & 0x3FFF) + 1
+                return int(w), int(h)
 
-            if chunk_type == b"VP8X":
-                if chunk_size >= 10:
-                    w = int.from_bytes(b[chunk_start + 4 : chunk_start + 7], "little", signed=False) + 1
-                    h = int.from_bytes(b[chunk_start + 7 : chunk_start + 10], "little", signed=False) + 1
-                    return int(w), int(h)
+            if chunk_type == b"VP8X" and chunk_size >= 10:
+                w = int.from_bytes(b[chunk_start + 4 : chunk_start + 7], "little", signed=False) + 1
+                h = (
+                    int.from_bytes(b[chunk_start + 7 : chunk_start + 10], "little", signed=False)
+                    + 1
+                )
+                return int(w), int(h)
 
             # Chunks are padded to even sizes.
             off = chunk_end + (chunk_size % 2)
@@ -184,4 +188,3 @@ def probe_webp_size(data: bytes) -> tuple[int, int] | None:
         return None
     except Exception:
         return None
-

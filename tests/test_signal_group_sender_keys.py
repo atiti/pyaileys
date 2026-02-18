@@ -44,7 +44,9 @@ async def test_sender_keys_distribution_then_skmsg_roundtrip() -> None:
     padded = encode_wa_message_bytes(payload)
 
     ct, dist = await alice.encrypt_group_message(group_jid=group, me_jid=alice_jid, data=padded)
-    await bob.process_sender_key_distribution_message(group, author_jid=alice_jid, distribution_bytes=dist)
+    await bob.process_sender_key_distribution_message(
+        group, author_jid=alice_jid, distribution_bytes=dist
+    )
 
     out = await bob.decrypt_group_message(group_jid=group, author_jid=alice_jid, ciphertext=ct)
     assert out == padded
@@ -65,18 +67,26 @@ async def test_sender_keys_multiple_messages_no_redistribution_needed() -> None:
     ct1, dist1 = await alice.encrypt_group_message(
         group_jid=group, me_jid=alice_jid, data=encode_wa_message_bytes(b"m1")
     )
-    await bob.process_sender_key_distribution_message(group, author_jid=alice_jid, distribution_bytes=dist1)
-    assert decode_wa_message_bytes(
-        await bob.decrypt_group_message(group_jid=group, author_jid=alice_jid, ciphertext=ct1)
-    ) == b"m1"
+    await bob.process_sender_key_distribution_message(
+        group, author_jid=alice_jid, distribution_bytes=dist1
+    )
+    assert (
+        decode_wa_message_bytes(
+            await bob.decrypt_group_message(group_jid=group, author_jid=alice_jid, ciphertext=ct1)
+        )
+        == b"m1"
+    )
 
     # Next message can be decrypted without processing a new distribution message.
     ct2, _dist2 = await alice.encrypt_group_message(
         group_jid=group, me_jid=alice_jid, data=encode_wa_message_bytes(b"m2")
     )
-    assert decode_wa_message_bytes(
-        await bob.decrypt_group_message(group_jid=group, author_jid=alice_jid, ciphertext=ct2)
-    ) == b"m2"
+    assert (
+        decode_wa_message_bytes(
+            await bob.decrypt_group_message(group_jid=group, author_jid=alice_jid, ciphertext=ct2)
+        )
+        == b"m2"
+    )
 
 
 @pytest.mark.asyncio
@@ -93,9 +103,10 @@ async def test_sender_keys_signature_mismatch_rejected() -> None:
     ct, dist = await alice.encrypt_group_message(
         group_jid=group, me_jid=alice_jid, data=encode_wa_message_bytes(b"tamper")
     )
-    await bob.process_sender_key_distribution_message(group, author_jid=alice_jid, distribution_bytes=dist)
+    await bob.process_sender_key_distribution_message(
+        group, author_jid=alice_jid, distribution_bytes=dist
+    )
 
     bad = ct[:-1] + bytes([ct[-1] ^ 0x01])
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         await bob.decrypt_group_message(group_jid=group, author_jid=alice_jid, ciphertext=bad)
-

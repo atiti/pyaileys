@@ -91,7 +91,11 @@ class HashState:
         return cls(version=ver, hash=bytes(h), indexValueMap=ivm)
 
     def to_store(self) -> dict[str, Any]:
-        return {"version": int(self.version), "hash": bytes(self.hash), "indexValueMap": dict(self.indexValueMap)}
+        return {
+            "version": int(self.version),
+            "hash": bytes(self.hash),
+            "indexValueMap": dict(self.indexValueMap),
+        }
 
     def update_hash_from_records(self, records: list[Any]) -> None:
         added: list[bytes] = []
@@ -291,7 +295,9 @@ class PatchProcessingResult:
     has_missing_remove: bool
 
 
-def validate_snapshot_mac(snapshot: Any, state: HashState, keys: ExpandedAppStateKeys, name: str) -> None:
+def validate_snapshot_mac(
+    snapshot: Any, state: HashState, keys: ExpandedAppStateKeys, name: str
+) -> None:
     mac_expected = getattr(snapshot, "mac", None)
     if (
         isinstance(mac_expected, (bytes, bytearray, memoryview))
@@ -386,7 +392,11 @@ def process_snapshot(
         mutations.append(mut)
         mutation_macs.append(AppStateMutationMAC(index_mac=mut.index_mac, value_mac=mut.value_mac))
 
-    return ProcessedSnapshot(state=HashState.from_store(initial_state.to_store()), mutations=mutations, mutation_macs=mutation_macs)
+    return ProcessedSnapshot(
+        state=HashState.from_store(initial_state.to_store()),
+        mutations=mutations,
+        mutation_macs=mutation_macs,
+    )
 
 
 def process_patch(

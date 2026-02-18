@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Signal Sender Keys (group E2E) implementation for WhatsApp Web multi-device.
 
@@ -14,6 +12,8 @@ On the wire this is exposed as:
 
 This module is a small, dependency-minimal port of Baileys' sender keys logic.
 """
+
+from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
@@ -85,11 +85,11 @@ class SenderChainKey:
     iteration: int
     seed: bytes
 
-    def sender_message_key(self) -> "SenderMessageKey":
+    def sender_message_key(self) -> SenderMessageKey:
         msg_seed = hmac_sha256(self.seed, b"\x01")
         return SenderMessageKey(iteration=self.iteration, seed=msg_seed)
 
-    def next(self) -> "SenderChainKey":
+    def next(self) -> SenderChainKey:
         next_seed = hmac_sha256(self.seed, b"\x02")
         return SenderChainKey(iteration=int(self.iteration) + 1, seed=next_seed)
 
@@ -234,7 +234,7 @@ class SenderKeyDistributionMessage:
         iteration: int,
         chain_key: bytes,
         signing_key: bytes,
-    ) -> "SenderKeyDistributionMessage":
+    ) -> SenderKeyDistributionMessage:
         proto = _get_proto()
         pb = proto.SenderKeyDistributionMessage()
         pb.id = int(sender_key_id)
@@ -289,7 +289,7 @@ class SenderKeyMessage:
         ciphertext: bytes,
         signing_key_private: bytes,
         curve: Curve25519Provider | None = None,
-    ) -> "SenderKeyMessage":
+    ) -> SenderKeyMessage:
         if not signing_key_private:
             raise ValueError("signing_key_private is required")
 
@@ -321,7 +321,9 @@ class SenderKeyMessage:
     def ciphertext(self) -> bytes:
         return bytes(self._pb.ciphertext or b"")
 
-    def verify_signature(self, signing_key_public: bytes, *, curve: Curve25519Provider | None = None) -> None:
+    def verify_signature(
+        self, signing_key_public: bytes, *, curve: Curve25519Provider | None = None
+    ) -> None:
         c = curve or DefaultCurve25519Provider()
         to_verify = bytes([self._version]) + self._message
         if not c.verify(signing_key_public, to_verify, self._signature):
@@ -458,4 +460,3 @@ class GroupCipher:
 
 def jid_to_sender_key_name(group_jid: str, sender_jid: str) -> SenderKeyName:
     return SenderKeyName(group_id=group_jid, sender=jid_to_signal_address(sender_jid))
-
