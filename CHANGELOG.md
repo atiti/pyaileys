@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.1.3] - 2026-02-18
+
+### Added
+
+- App-state sync implementation (snapshot + patch processing, key request flow, and in-memory model application)
+- Group Sender Keys (`skmsg`) support for group E2E decrypt/encrypt
+- Expanded media support (video, stickers) plus media metadata helpers
+- End-to-end smoke runner (`tools/e2e_smoke.sh`) that exercises real CLI flows and media round-trips
+
+### Changed
+
+- App-state sync retry now includes per-collection fallback on MAC mismatch with warning events
+
 ## [0.1.2] - 2026-02-17
 
 ### Added
