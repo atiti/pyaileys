@@ -34,7 +34,7 @@ from .messages import (
 from .signal import SignalRepository
 from .socket import WASocket
 from .socket_config import SocketConfig
-from .store import ChatInfo, ContactInfo, InMemoryStore, MessageInfo
+from .store import ChatInfo, ContactInfo, InMemoryStore, MessageInfo, SQLiteStore
 from .util.asyncio import ensure_task
 from .util.events import Listener
 from .wabinary import S_WHATSAPP_NET
@@ -67,11 +67,17 @@ class WhatsAppClient:
     socket/protocol implementation evolves.
     """
 
-    def __init__(self, *, auth: AuthenticationState, config: ClientConfig | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        auth: AuthenticationState,
+        config: ClientConfig | None = None,
+        store: InMemoryStore | None = None,
+    ) -> None:
         self.config = config or ClientConfig()
         self.socket = WASocket(config=self.config.socket, auth=auth)
         self.signal = SignalRepository(auth)
-        self.store = InMemoryStore()
+        self.store = store or InMemoryStore()
         self._app_state_lock = asyncio.Lock()
         # Best-effort alternate-JID mapping (PN <-> LID) for decrypt/send fallbacks.
         # Keys/values are normalized user JIDs (no device).
@@ -83,7 +89,11 @@ class WhatsAppClient:
 
     @classmethod
     async def from_auth_folder(
-        cls, folder: str, *, socket: SocketConfig | None = None
+        cls,
+        folder: str,
+        *,
+        socket: SocketConfig | None = None,
+        store_path: str | None = None,
     ) -> tuple[WhatsAppClient, MultiFileAuthState]:
         """
         Convenience constructor using a Baileys-like multi-file auth folder.
@@ -91,10 +101,12 @@ class WhatsAppClient:
         Returns `(client, auth_state)` so callers can `await auth_state.save_creds()` on updates.
         """
 
-        auth_state = await MultiFileAuthState.load(folder)
+        auth_dir = Path(folder).expanduser().resolve()
+        auth_state = await MultiFileAuthState.load(str(auth_dir))
         auth = AuthenticationState(creds=auth_state.creds, keys=auth_state.keys)
         config = ClientConfig(socket=socket or SocketConfig())
-        return cls(auth=auth, config=config), auth_state
+        store = SQLiteStore(store_path or (auth_dir / "pyaileys.sqlite3"))
+        return cls(auth=auth, config=config, store=store), auth_state
 
     async def connect(self) -> None:
         await self.socket.connect()
@@ -228,6 +240,18 @@ class WhatsAppClient:
 
         chat = self.store.get_chat(base)
         return chat.name if chat and chat.name else None
+
+    async def resolve_group_name(self, jid: str) -> str | None:
+        """Fetch one group's metadata and cache its WhatsApp subject locally."""
+
+        if not jid.endswith("@g.us"):
+            raise ValueError("group name resolution requires a @g.us JID")
+
+        metadata = await self.socket.group_metadata(jid)
+        self.store.upsert_chat(ChatInfo(jid=jid, name=metadata.subject))
+        if metadata.id != jid:
+            self.store.upsert_chat(ChatInfo(jid=metadata.id, name=metadata.subject))
+        return metadata.subject
 
     async def profile_picture_url(
         self,
@@ -1296,6 +1320,7 @@ class WhatsAppClient:
                     sender_jid=jid_normalized_user(me.id) or me.id,
                     timestamp_s=now_s,
                     text=text,
+                    from_me=True,
                     raw=msg,
                 )
             )
@@ -1569,47 +1594,17 @@ class WhatsAppClient:
 
     async def request_full_history_sync(self) -> str:
         """
-        Ask the phone for a full history sync (peer data operation request).
+        Full-history requests are intentionally disabled.
 
-        The phone should respond with one or more HistorySyncNotifications that
-        the client will download & ingest into `self.store`.
+        WhatsApp's normal companion sync and Baileys use recent-history
+        notifications plus anchored, per-chat on-demand requests. A broad phone
+        export can pause primary-device message sync, so use
+        :meth:`request_chat_history` instead.
         """
-
-        # Import lazily; the generated WAProto module is large.
-        from .proto import WAProto_pb2 as proto
-
-        me = self.socket.auth.creds.me
-        if not me:
-            raise RuntimeError("not authenticated")
-
-        request_id = self.signal.new_message_id()
-
-        pdo = proto.Message.PeerDataOperationRequestMessage()
-        pdo.peerDataOperationRequestType = (
-            proto.Message.PeerDataOperationRequestType.FULL_HISTORY_SYNC_ON_DEMAND
+        raise RuntimeError(
+            "full history sync is disabled to avoid pausing phone message sync; "
+            "use request_chat_history() with a locally stored anchor message"
         )
-        pdo.fullHistorySyncOnDemandRequest.requestMetadata.requestId = request_id
-        # Advertise companion capabilities (mirrors Baileys defaults).
-        pdo.fullHistorySyncOnDemandRequest.historySyncConfig.storageQuotaMb = 10240
-        pdo.fullHistorySyncOnDemandRequest.historySyncConfig.inlineInitialPayloadInE2EeMsg = True
-        pdo.fullHistorySyncOnDemandRequest.historySyncConfig.supportCallLogHistory = False
-        pdo.fullHistorySyncOnDemandRequest.historySyncConfig.supportBotUserAgentChatHistory = True
-        pdo.fullHistorySyncOnDemandRequest.historySyncConfig.supportCagReactionsAndPolls = True
-        pdo.fullHistorySyncOnDemandRequest.historySyncConfig.supportBizHostedMsg = True
-        pdo.fullHistorySyncOnDemandRequest.historySyncConfig.supportRecentSyncChunkMessageCountTuning = True
-        pdo.fullHistorySyncOnDemandRequest.historySyncConfig.supportHostedGroupMsg = True
-        pdo.fullHistorySyncOnDemandRequest.historySyncConfig.supportFbidBotChatHistory = True
-        pdo.fullHistorySyncOnDemandRequest.historySyncConfig.supportMessageAssociation = True
-        pdo.fullHistorySyncOnDemandRequest.historySyncConfig.supportGroupHistory = False
-
-        msg = proto.Message()
-        msg.protocolMessage.type = (
-            proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_MESSAGE
-        )
-        msg.protocolMessage.peerDataOperationRequestMessage.CopyFrom(pdo)
-
-        await self._send_peer_message(msg)
-        return request_id
 
     async def request_chat_history(self, chat_jid: str, *, count: int = 50) -> str:
         """
@@ -1635,35 +1630,40 @@ class WhatsAppClient:
         if me.lid:
             pdo.historySyncOnDemandRequest.accountLid = me.lid
 
-        # On-demand history requests require an "anchor" message key.
+        # Baileys' on-demand contract requires an "anchor" message key.
         # Use the oldest message we currently have in the local store as the anchor.
         oldest = self.store.oldest_message(chat_norm)
-        if oldest and oldest.id:
-            pdo.historySyncOnDemandRequest.oldestMsgId = oldest.id
-            pdo.historySyncOnDemandRequest.oldestMsgTimestampMs = int(oldest.timestamp_s) * 1000
+        if not oldest or not oldest.id:
+            raise RuntimeError(
+                "on-demand history requires a locally stored message for this chat; "
+                "wait for normal recent sync or an incoming message before requesting older history"
+            )
+        pdo.historySyncOnDemandRequest.oldestMsgId = oldest.id
+        pdo.historySyncOnDemandRequest.oldestMsgTimestampMs = int(oldest.timestamp_s) * 1000
 
-            from_me: bool | None = None
-            try:
+        from_me: bool | None = oldest.from_me
+        try:
+            if from_me is None:
                 k = getattr(oldest.raw, "key", None)
                 fm = getattr(k, "fromMe", None) if k is not None else None
                 if isinstance(fm, bool):
                     from_me = fm
-            except Exception:
-                from_me = None
+        except Exception:
+            from_me = None
 
-            if from_me is None:
-                me_pn = jid_decode(me.id)
-                me_lid = jid_decode(me.lid) if me.lid else None
-                sender = jid_decode(oldest.sender_jid) if oldest.sender_jid else None
-                sender_user = sender.user if sender else None
-                if (sender_user and me_pn and sender_user == me_pn.user) or (
-                    sender_user and me_lid and me_lid.user and sender_user == me_lid.user
-                ):
-                    from_me = True
-                else:
-                    from_me = False
+        if from_me is None:
+            me_pn = jid_decode(me.id)
+            me_lid = jid_decode(me.lid) if me.lid else None
+            sender = jid_decode(oldest.sender_jid) if oldest.sender_jid else None
+            sender_user = sender.user if sender else None
+            if (sender_user and me_pn and sender_user == me_pn.user) or (
+                sender_user and me_lid and me_lid.user and sender_user == me_lid.user
+            ):
+                from_me = True
+            else:
+                from_me = False
 
-            pdo.historySyncOnDemandRequest.oldestMsgFromMe = bool(from_me)
+        pdo.historySyncOnDemandRequest.oldestMsgFromMe = bool(from_me)
 
         msg = proto.Message()
         msg.protocolMessage.type = (
@@ -2443,6 +2443,8 @@ class WhatsAppClient:
                 mid = stanza.attrs.get("id") or ""
 
                 if chat_jid:
+                    me = self.socket.auth.creds.me
+                    my_jid = jid_normalized_user(me.id) if me else None
                     self.store.upsert_chat(ChatInfo(jid=chat_jid))
                     self.store.add_message(
                         MessageInfo(
@@ -2451,6 +2453,7 @@ class WhatsAppClient:
                             sender_jid=sender_jid,
                             timestamp_s=ts,
                             text=text,
+                            from_me=sender_jid == my_jid if my_jid else None,
                             raw=inner,
                         )
                     )
@@ -2644,6 +2647,7 @@ class WhatsAppClient:
                         sender_jid=sender,
                         timestamp_s=ts,
                         text=text,
+                        from_me=bool(wm.key.fromMe),
                         raw=wm,
                     )
                 )

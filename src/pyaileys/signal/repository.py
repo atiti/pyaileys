@@ -384,6 +384,27 @@ class SignalRepository:
                 if not pk.identityKey or not pk.baseKey or not pk.message:
                     raise SignalError("invalid pkmsg (missing fields)")
 
+                # A sender can keep wrapping messages as pkmsg until it receives a reply.
+                # After the first one we have consumed the one-time pre-key, but a session
+                # for this exact identity/base-key pair can still decrypt the embedded
+                # SignalMessage. This is the behavior provided by libsignal's
+                # decryptPreKeyWhisperMessage.
+                rec = await self._store.load_session(addr)
+                if rec:
+                    sess = rec.currentSession
+                    same_identity = bytes(sess.remoteIdentityPublic) == bytes(pk.identityKey)
+                    same_base_key = bytes(sess.aliceBaseKey) == bytes(pk.baseKey)
+                    same_registration = (
+                        not pk.HasField("registrationId")
+                        or not sess.remoteRegistrationId
+                        or int(sess.remoteRegistrationId) == int(pk.registrationId)
+                    )
+                    if same_identity and same_base_key and same_registration:
+                        plaintext = self._decrypt_whisper_into_session(sess, bytes(pk.message))
+                        rec.currentSession.CopyFrom(sess)
+                        await self._store.store_session(addr, rec)
+                        return plaintext
+
                 # Build a fresh session (Bob) & decrypt the embedded whisper message.
                 try:
                     sess = await self._build_session_from_prekey_message(pk)

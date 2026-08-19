@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from .client import WhatsAppClient
 from .exceptions import PyaileysError
+from .store import SQLiteStore
 
 __all__ = [
     "PyaileysError",
+    "SQLiteStore",
     "WhatsAppClient",
 ]
 

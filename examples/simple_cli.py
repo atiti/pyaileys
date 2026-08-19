@@ -43,6 +43,8 @@ async def main() -> None:
     async def on_update(update: ConnectionUpdate) -> None:
         if update.connection:
             print("connection:", update.connection)
+        if update.last_disconnect:
+            print("disconnect reason:", update.last_disconnect)
         if update.qr:
             print("\nScan this QR in WhatsApp -> Settings -> Linked devices -> Link a device\n")
 
@@ -115,8 +117,11 @@ async def main() -> None:
     await client.connect()
 
     print(
-        "\nCommands: help, appsync [collection...], sync, sync_chat <jid> [n], chats, history <jid> [n], send <jid> <text>, typing <jid> on|off, recording <jid> on|off, name <jid>, ppic <jid> [preview|image], status <jid> [jid...], send_image <jid> <path> [caption], send_ptt <jid> <path> [seconds], send_doc <jid> <path> [caption], send_video <jid> <path> [caption], send_sticker <jid> <path>, send_vcard <jid> <path> [display_name], send_contacts <jid> <vcf1> <vcf2>..., send_location <jid> <lat> <lng> [name], download <chat_jid> <msg_id> <out>, me, quit\n"
+        "\nCommands: help, connect, appsync [collection...], sync_chat <jid> [n], chats, group <jid>, history <jid> [n], send <jid> <text>, typing <jid> on|off, recording <jid> on|off, name <jid>, ppic <jid> [preview|image], status <jid> [jid...], send_image <jid> <path> [caption], send_ptt <jid> <path> [seconds], send_doc <jid> <path> [caption], send_video <jid> <path> [caption], send_sticker <jid> <path>, send_vcard <jid> <path> [display_name], send_contacts <jid> <vcf1> <vcf2>..., send_location <jid> <lat> <lng> [name], download <chat_jid> <msg_id> <out>, me, quit\n"
     )
+    store_path = getattr(client.store, "path", None)
+    if store_path:
+        print(f"Local SQLite cache: {store_path}\n")
 
     while True:
         try:
@@ -136,10 +141,11 @@ async def main() -> None:
 
         if cmd == "help":
             print("help")
+            print("connect  (retry the WebSocket connection after a close)")
             print("appsync [collection...]  (sync app-state from server)")
-            print("sync  (request full history sync from phone)")
-            print("sync_chat <jid> [n]  (request on-demand history for a chat)")
+            print("sync_chat <jid> [n]  (request anchored on-demand history for a chat)")
             print("chats")
+            print("group <jid>  (fetch and cache one group title; @g.us JID only)")
             print("history <jid> [n]")
             print("send <jid> <text>")
             print("typing <jid> on|off")
@@ -164,10 +170,20 @@ async def main() -> None:
             print("me:", client.socket.auth.creds.me)
             continue
 
+        if cmd == "connect":
+            if client.socket.is_open:
+                print("already connected")
+                continue
+            try:
+                await client.connect()
+            except Exception as e:
+                print("error:", e)
+            continue
+
         if cmd == "chats":
             chats = client.store.list_chats()
             if not chats:
-                print("(no chats yet; wait for history sync)")
+                print("(no cached chats yet; appsync does not download chat history)")
                 continue
             for c in chats:
                 last = client.store.last_message(c.jid)
@@ -180,12 +196,23 @@ async def main() -> None:
                 print(f"- {c.jid}{name_s}{last_s}{extra}")
             continue
 
-        if cmd == "sync":
+        if cmd == "group":
+            jid = argstr.strip()
+            if not jid:
+                print("usage: group <jid>")
+                continue
             try:
-                req = await client.request_full_history_sync()
-                print("requested:", req)
+                subject = await client.resolve_group_name(jid)
+                print("group:", subject if subject else "(no subject returned)")
             except Exception as e:
                 print("error:", e)
+            continue
+
+        if cmd == "sync":
+            print(
+                "full history sync is disabled to avoid pausing phone message sync; "
+                "use appsync, wait for a recent/incoming message, then use sync_chat <jid> [n]"
+            )
             continue
 
         if cmd == "appsync":

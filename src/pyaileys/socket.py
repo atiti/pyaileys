@@ -74,6 +74,7 @@ class GroupParticipant:
 @dataclass(frozen=True, slots=True)
 class GroupMetadata:
     id: str
+    subject: str | None = None
     addressing_mode: str = "lid"  # "lid" | "pn"
     ephemeral_duration: int | None = None
     participants: list[GroupParticipant] = field(default_factory=list)
@@ -114,6 +115,7 @@ class WASocket:
         self._default_handlers_installed = False
         self._connect_lock = asyncio.Lock()
         self._restart_task: asyncio.Task[object] | None = None
+        self._reconnect_task: asyncio.Task[object] | None = None
 
         self._epoch = 1
         self._uq_tag = f"{int(dt.datetime.now().timestamp())}-"
@@ -152,7 +154,11 @@ class WASocket:
             self._frame_queue = asyncio.Queue()
             self._last_date_recv = None
 
-            await self._transport.connect()
+            try:
+                await self._transport.connect()
+            except Exception:
+                self._closed = True
+                raise
             if not self._default_handlers_installed:
                 self._install_default_handlers()
                 self._default_handlers_installed = True
@@ -170,8 +176,16 @@ class WASocket:
 
             await self._validate_connection()
 
-    async def close(self) -> None:
+    async def close(
+        self,
+        *,
+        last_disconnect: Exception | None = None,
+        reconnect: bool = False,
+    ) -> None:
         if self._closed:
+            if not reconnect:
+                await cancel_suppress(self._reconnect_task)
+                self._reconnect_task = None
             return
         self._closed = True
 
@@ -183,13 +197,54 @@ class WASocket:
         self._recv_task = None
         await self._transport.close()
 
-        await self.events.emit("connection.update", ConnectionUpdate(connection="close"))
+        await self.events.emit(
+            "connection.update",
+            ConnectionUpdate(connection="close", last_disconnect=last_disconnect),
+        )
+
+        if reconnect:
+            self._schedule_auto_reconnect()
+        else:
+            await cancel_suppress(self._reconnect_task)
+            self._reconnect_task = None
+
+    def _schedule_auto_reconnect(self) -> None:
+        if not self.config.auto_reconnect:
+            return
+        task = self._reconnect_task
+        if task and not task.done() and task is not asyncio.current_task():
+            return
+        self._reconnect_task = ensure_task(
+            self._auto_reconnect_loop(), name="pyaileys.auto_reconnect"
+        )
+
+    async def _auto_reconnect_loop(self) -> None:
+        delay_s = max(float(self.config.reconnect_delay_s), 0.0)
+        max_delay_s = max(float(self.config.reconnect_max_delay_s), delay_s)
+
+        while self._closed:
+            await asyncio.sleep(delay_s)
+            if not self._closed:
+                return
+            try:
+                await self.connect()
+            except Exception as e:
+                await self.events.emit(
+                    "connection.update",
+                    ConnectionUpdate(connection="connecting", last_disconnect=e),
+                )
+                delay_s = min(max(delay_s * 2, 0.1), max_delay_s)
+                continue
+            return
 
     async def restart(self, *, delay_s: float = 0.2) -> None:
         # Best-effort: close current connection and reconnect.
         await self.close()
         await asyncio.sleep(delay_s)
-        await self.connect()
+        try:
+            await self.connect()
+        except Exception:
+            self._schedule_auto_reconnect()
 
     async def send_raw(self, payload: bytes) -> None:
         if not self._noise:
@@ -366,6 +421,7 @@ class WASocket:
 
         return GroupMetadata(
             id=gid,
+            subject=group.attrs.get("subject"),
             addressing_mode=addressing_mode,
             ephemeral_duration=eph,
             participants=parts,
@@ -530,9 +586,7 @@ class WASocket:
             try:
                 data = await self._transport.recv()
             except TransportError as e:
-                await self.events.emit(
-                    "connection.update", ConnectionUpdate(connection="close", last_disconnect=e)
-                )
+                await self.close(last_disconnect=e, reconnect=True)
                 return
 
             async def _on_frame(frame: bytes) -> None:
@@ -609,7 +663,7 @@ class WASocket:
             if self._last_date_recv is not None:
                 diff = (dt.datetime.now(dt.UTC) - self._last_date_recv).total_seconds()
                 if diff > self.config.keep_alive_interval_s + 5:
-                    await self.close()
+                    await self.close(reconnect=True)
                     return
 
             if self.is_open:
@@ -1053,6 +1107,8 @@ class WASocket:
     async def _on_stream_error(self, stanza: BinaryNode) -> None:
         code_raw = stanza.attrs.get("code")
         code = int(code_raw) if code_raw and code_raw.isdigit() else 0
+        text = stanza.attrs.get("text") or "stream error"
+        error = TransportError(f"WhatsApp stream error {code or 'unknown'}: {text}")
 
         # WhatsApp requests a restart after successful pairing (Baileys maps this to DisconnectReason.restartRequired).
         if code == 515:
@@ -1060,7 +1116,10 @@ class WASocket:
                 self._restart_task = ensure_task(self.restart(), name="pyaileys.restart_required")
             return
 
-        ensure_task(self.close(), name="pyaileys.close_on_stream_error")
+        ensure_task(
+            self.close(last_disconnect=error, reconnect=True),
+            name="pyaileys.close_on_stream_error",
+        )
 
     async def _on_iq_ping(self, stanza: BinaryNode) -> None:
         # The server periodically sends XMPP pings. If we don't ACK them,
