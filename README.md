@@ -1,6 +1,5 @@
 # pyaileys
 
-[![CI](https://github.com/atiti/pyaileys/actions/workflows/ci.yml/badge.svg)](https://github.com/atiti/pyaileys/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/pyaileys.svg)](https://pypi.org/project/pyaileys/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/pyaileys.svg)](https://pypi.org/project/pyaileys/)
 [![License](https://img.shields.io/pypi/l/pyaileys.svg)](LICENSE)
@@ -22,21 +21,22 @@ This is an early-stage protocol client.
 What works today:
 
 - MD session login + QR pairing
+- Automatic reconnect after unexpected transport/server closes (1s to 30s capped backoff)
 - 1:1 Signal E2E (`pkmsg`/`msg`) decrypt/encrypt
 - Group Signal E2E (`skmsg`) decrypt/encrypt (Sender Keys)
 - Text send (1:1 multi-device fanout, groups via Sender Keys)
 - Typing/recording indications (`chatstate`)
 - Media send (image, PTT voice note, documents, video, stickers, static location, contacts)
 - Media download/decrypt (image, audio/PTT, documents, video, stickers)
-- History Sync ingestion into an in-memory store
+- Durable SQLite cache for chats, contact metadata, and safe history anchors (default for auth-folder sessions)
 - Best-effort contact/profile metadata (names from history sync + `notify` push names, profile picture URL, status/about)
 
 ## Limitations (Important)
 
 - Media thumbnails + waveform: not generated automatically (you can supply `jpeg_thumbnail` / `waveform`)
-- App-state sync supports snapshot + patch processing and updates the in-memory store (best-effort model application)
+- App-state sync supports snapshot + patch processing and updates the local cache (best-effort model application)
 - App-state sync depends on app-state keys from the primary phone; the client requests missing keys, but very old sessions may require re-pairing
-- Chat/contact model: minimal demo store; contact names/profile are best-effort
+- Chat/contact model: local cache with best-effort contact names/profile metadata
 - API stability: no guarantees yet (pre-1.0)
 
 ## Legal / Safety
@@ -90,6 +90,18 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+`from_auth_folder()` creates a durable SQLite cache at `./auth/pyaileys.sqlite3` by default. It preserves chat JIDs, resolved group titles, contact metadata, message IDs/timestamps, and the `fromMe` flag needed for safe on-demand history anchors across restarts. The cache does persist extracted plaintext message text; it deliberately does not persist raw protobuf payloads, downloaded media, or authentication keys. Keep the auth folder private and out of version control.
+
+To place the local cache elsewhere, pass a path explicitly:
+
+```python
+client, auth_state = await WhatsAppClient.from_auth_folder(
+    "./auth", store_path="./local-state/pyaileys.sqlite3"
+)
+```
+
+Unexpected WebSocket/server closes reconnect automatically by default. Retries start after one second and back off to a 30-second maximum; calling `disconnect()` or using `quit` in the CLI stops retrying. Configure `SocketConfig(auto_reconnect=False)` to opt out.
+
 ## Contacts & Profiles (Best-Effort)
 
 WhatsApp Web does not provide a simple "address book" API. In practice, name/profile info comes from multiple places:
@@ -127,10 +139,20 @@ Simple CLI (decrypt + store + send text/media, includes `appsync`):
 python examples/simple_cli.py --auth ./auth
 ```
 
+### Fetching older chat history safely
+
+Do not request a full phone-history export. WhatsApp companions and Baileys use normal recent-history notifications plus an anchored, per-chat on-demand request.
+
+1. Run `appsync` to refresh app-state metadata, then leave the client connected for normal recent or incoming messages to populate the local chat cache. `appsync` itself does not download chat history.
+2. Run `chats` and select the target JID (groups end in `@g.us`).
+3. Run `sync_chat <jid> <count>`.
+
+`sync_chat` requires one locally stored message in that chat to act as the anchor, matching Baileys' history API. The default SQLite cache preserves that anchor after restarts. The CLI intentionally disables `sync`, which previously requested a broad full-history export and could pause message sync on the primary phone.
+
 Automated end-to-end smoke test against your real linked account:
 
 ```bash
-tools/e2e_smoke.sh --jid 4527148803@s.whatsapp.net --auth ./auth
+tools/e2e_smoke.sh --jid <your-jid> --auth ./auth
 ```
 
 This script drives `examples/simple_cli.py`, sends test messages/media, downloads media back, and prints a pass/fail checklist.

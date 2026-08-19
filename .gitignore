@@ -197,6 +197,8 @@ cython_debug/
 # Local WhatsApp auth state (do not commit)
 /auth/
 /auth-*/
+pyaileys.sqlite3
+pyaileys.sqlite3-*
 
 # Cursor
 #  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to

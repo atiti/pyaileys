@@ -4,6 +4,7 @@ import pytest
 
 from pyaileys.auth.state import AuthenticationState
 from pyaileys.auth.utils import init_auth_creds
+from pyaileys.crypto.curve import DefaultCurve25519Provider
 from pyaileys.signal.repository import PreKeyBundle, PreKeyBundleKey, SignalRepository
 from pyaileys.signal.util import signal_pubkey
 
@@ -80,3 +81,48 @@ async def test_signal_encrypt_decrypt_pkmsg_then_msg() -> None:
 
     out4 = await bob.decrypt_message("alice@s.whatsapp.net", message_type=typ4, ciphertext=ct4)
     assert out4 == pt4
+
+
+@pytest.mark.asyncio
+async def test_signal_decrypts_followup_pkmsg_after_consuming_one_time_prekey() -> None:
+    alice_state = AuthenticationState(creds=init_auth_creds(), keys=MemoryKeyStore())
+    bob_state = AuthenticationState(creds=init_auth_creds(), keys=MemoryKeyStore())
+    alice = SignalRepository(alice_state)
+    bob = SignalRepository(bob_state)
+
+    one_time = DefaultCurve25519Provider().generate_keypair()
+    await bob_state.keys.set(
+        {"pre-key": {"8": {"public": one_time.public, "private": one_time.private}}}
+    )
+    bundle = PreKeyBundle(
+        registration_id=bob_state.creds.registration_id,
+        identity_key=signal_pubkey(bob_state.creds.signed_identity_key.public),
+        signed_pre_key=PreKeyBundleKey(
+            key_id=bob_state.creds.signed_pre_key.key_id,
+            public_key=signal_pubkey(bob_state.creds.signed_pre_key.key_pair.public),
+            signature=bob_state.creds.signed_pre_key.signature,
+        ),
+        pre_key=PreKeyBundleKey(key_id=8, public_key=signal_pubkey(one_time.public)),
+    )
+    await alice.inject_outgoing_session("bob@s.whatsapp.net", bundle)
+
+    first_type, first_ciphertext = await alice.encrypt_message("bob@s.whatsapp.net", data=b"first")
+    assert first_type == "pkmsg"
+    assert (
+        await bob.decrypt_message(
+            "alice@s.whatsapp.net", message_type=first_type, ciphertext=first_ciphertext
+        )
+        == b"first"
+    )
+    assert await bob._store.load_pre_key(8) is None
+
+    second_type, second_ciphertext = await alice.encrypt_message(
+        "bob@s.whatsapp.net", data=b"second"
+    )
+    assert second_type == "pkmsg"
+    assert (
+        await bob.decrypt_message(
+            "alice@s.whatsapp.net", message_type=second_type, ciphertext=second_ciphertext
+        )
+        == b"second"
+    )

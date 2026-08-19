@@ -18,8 +18,8 @@ Options:
   -h, --help         Show this help
 
 Examples:
-  tools/e2e_smoke.sh --jid 4527148803@s.whatsapp.net
-  tools/e2e_smoke.sh --jid 98183136948407@lid --auth ./auth --timeout 35
+  tools/e2e_smoke.sh --jid <your-jid>
+  tools/e2e_smoke.sh --jid <your-jid> --auth ./auth --timeout 35
 EOF
 }
 

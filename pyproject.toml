@@ -9,7 +9,7 @@ description = "Async WhatsApp Web (Multi-Device) protocol client in pure Python,
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
-authors = [{ name = "Attila Sukosd" }]
+authors = [{ name = "Pyaileys contributors" }]
 keywords = ["whatsapp", "websocket", "asyncio", "protocol", "baileys"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
@@ -41,13 +41,6 @@ dev = [
   "types-protobuf>=4.25.0.20240417",
 ]
 qrcode = ["qrcode>=7.4.2"]
-
-[project.urls]
-Homepage = "https://github.com/atiti/pyaileys"
-Repository = "https://github.com/atiti/pyaileys"
-Issues = "https://github.com/atiti/pyaileys/issues"
-Changelog = "https://github.com/atiti/pyaileys/blob/main/CHANGELOG.md"
-Security = "https://github.com/atiti/pyaileys/security"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
