@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.1.5] - 2026-08-19
+
+### Added
+
+- Durable SQLite cache for auth-folder clients, preserving chat metadata and safe history anchors across restarts
+- Targeted group-title resolution and CLI visibility for the local cache
+- Automatic reconnect with capped backoff plus actionable disconnect diagnostics
+
+### Changed
+
+- Updated WhatsApp Web version/browser fingerprint for current Baileys compatibility
+- Replaced broad full-history exports with anchored, per-chat on-demand history requests
+
+### Fixed
+
+- Follow-up `pkmsg` decryption after one-time pre-key consumption
+
 ## [0.1.4] - 2026-02-18
 
 ### Fixed
